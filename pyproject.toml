@@ -8,4 +8,19 @@ dependencies = [
     "fastapi[standard]>=0.140.13",
     "pydantic>=2.13.4",
     "osmnx>=1.9,<2",
+    "orjson>=3.11.9",
+    "sqlalchemy[asyncio]>=2.0.51",
+    "asyncpg>=0.31.0",
+    "greenlet>=3.5.4",
+    "redis>=8.1.0",
 ]
+
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "_rust_engine"
+
+[tool.uv]
+package = false

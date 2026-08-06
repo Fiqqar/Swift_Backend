@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cek Sistem - TEST2 Pathfinding</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>TES2 API Engine — Cek Sistem &amp; Pathfinding</h1>
+  <div class="badges">
+    <span class="badge" id="b-server">Server: ?</span>
+    <span class="badge" id="b-osm">osmnx: ?</span>
+    <span class="badge" id="b-overpass">Overpass: ?</span>
+    <span class="badge" id="b-source">source: ?</span>
+  </div>
+</header>
+<div id="notice"></div>
+<main>
+  <div id="map"></div>
+  <div id="panel">
+    <section>
+      <h2>Atur Titik</h2>
+      <div class="mode-row">
+        <label><input type="radio" name="mode" value="origin" checked><span>Klik = Titik Awal</span></label>
+        <label><input type="radio" name="mode" value="dest"><span>Klik = Tujuan</span></label>
+      </div>
+      <div class="row"><span>Origin</span><b id="txt-origin">-</b></div>
+      <div class="row"><span>Destination</span><b id="txt-dest">-</b></div>
+      <button class="btn primary" id="btn-route" disabled>Cari Rute</button>
+    </section>
+
+    <section>
+      <h2>Geolokasi Real-time</h2>
+      <label style="font-size:12px; display:block; margin-bottom:6px;">
+        <input type="checkbox" id="chk-autoroute"> Auto cari rute setelah ambil lokasi
+      </label>
+      <button class="btn green" id="btn-geo">Gunakan Lokasi Saya</button>
+      <button class="btn red" id="btn-track">Mulai Lacak Posisi</button>
+    </section>
+
+    <section>
+      <h2>Hasil Rute</h2>
+      <div id="result">
+        <div class="row"><span>Status</span><b id="r-status">-</b></div>
+        <div class="row"><span>Jarak total</span><b id="r-dist">-</b></div>
+        <div class="row"><span>Titik rute</span><b id="r-points">-</b></div>
+        <div class="row"><span>Area peta</span><b id="r-radius">-</b></div>
+        <div class="row"><span>Sumber data</span><b id="r-source">-</b></div>
+      </div>
+      <button class="btn ghost" id="btn-reset" style="margin-top:8px;">Reset Peta</button>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div id="log">Siap. Klik peta atau jalankan tes...</div>
+    </section>
+  </div>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

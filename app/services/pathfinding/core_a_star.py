@@ -13,6 +13,13 @@ def haversine_distance(coord1: tuple, coord2: tuple) -> float:
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
+def edge_id(u: int, v: int) -> int:
+    """ID edge numerik deterministik dari pasangan node (Cantor pairing)."""
+    a = u if u >= 0 else 2 * (-u) - 1
+    b = v if v >= 0 else 2 * (-v) - 1
+    return (a + b) * (a + b + 1) // 2 + b
+
+
 def precompute_geo(locations: dict) -> dict:
     """Siapkan nilai trigonometri per node agar haversine dihitung cepat."""
     out = {}
@@ -35,7 +42,8 @@ def _haversine_from_geo(g1: tuple, g2: tuple) -> float:
 
 
 def _astar(graph: dict, geo: dict, heuristic, start_node: int,
-           goal_node: int, stats: dict | None = None):
+           goal_node: int, stats: dict | None = None,
+           penalties: dict | None = None):
     if start_node not in graph or goal_node not in graph:
         return None, float('inf')
     if start_node == goal_node:
@@ -60,6 +68,9 @@ def _astar(graph: dict, geo: dict, heuristic, start_node: int,
         if stats is not None:
             stats['visited'] = stats.get('visited', 0) + 1
         for neighbor, weight in graph[current].items():
+            if penalties:
+                weight = weight * penalties.get(
+                    edge_id(current, neighbor), 1.0)
             tentative = gc + weight
             if tentative < g_score.get(neighbor, float('inf')):
                 came_from[neighbor] = current
@@ -80,7 +91,8 @@ def _astar(graph: dict, geo: dict, heuristic, start_node: int,
 
 def run_a_star(graph: dict, locations: dict, start_node: int,
                goal_node: int, geo: dict | None = None,
-               stats: dict | None = None):
+               stats: dict | None = None,
+               penalties: dict | None = None):
     if start_node not in graph or goal_node not in graph:
         return None, float('inf')
     if geo is None:
@@ -89,7 +101,8 @@ def run_a_star(graph: dict, locations: dict, start_node: int,
     def heuristic(node):
         return _haversine_from_geo(geo[node], geo[goal_node])
 
-    return _astar(graph, geo, heuristic, start_node, goal_node, stats)
+    return _astar(graph, geo, heuristic, start_node, goal_node, stats,
+                  penalties)
 
 
 def _alt_heuristic(geo: dict, landmark_dists: list,
@@ -199,7 +212,11 @@ def run_bidirectional_alt(graph: dict, geo: dict, landmark_dists: list,
     return path_fwd + path_bwd, mu
 
 
-def shortest_path(pg, start_node: int, goal_node: int):
+def shortest_path(pg, start_node: int, goal_node: int,
+                  penalties: dict | None = None):
+    if penalties:
+        return run_a_star(pg.graph, pg.locations, start_node, goal_node,
+                          pg.geo, penalties=penalties)
     if pg.ch is not None:
         path, cost = pg.ch.query(start_node, goal_node)
         if path is not None:

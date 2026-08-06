@@ -10,3 +10,7 @@ wheels/
 .venv
 .env
 docs
+cache
+
+# Rust build artifacts
+target/
