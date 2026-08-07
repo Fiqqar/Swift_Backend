@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var map = L.map('map').setView([-6.1754, 106.8272], 14);
+  var map = L.map('map').setView([-6.8048, 110.8385], 14);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -52,6 +52,54 @@
     $('notice').className = '';
   }
 
+  var loadingTimer = null;
+
+  function showLoading(msg) {
+    if (loadingTimer) clearInterval(loadingTimer);
+    $('loading-text').textContent = msg || 'Menghubungi server...';
+    var start = Date.now();
+    $('loading-time').textContent = '0 dtk';
+    $('loading').className = 'loading show';
+    loadingTimer = setInterval(function () {
+      var s = Math.floor((Date.now() - start) / 1000);
+      $('loading-time').textContent = s + ' dtk';
+    }, 1000);
+  }
+
+  function hideLoading() {
+    if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+    $('loading').className = 'loading';
+  }
+
+  function isPbf(source) {
+    return source === 'pbf' || (typeof source === 'string' && source.indexOf('pbf:') === 0);
+  }
+
+  function pbfName(source) {
+    if (!isPbf(source) || source === 'pbf') return '';
+    return source.slice(4);
+  }
+
+  function sourceInfo(source) {
+    if (isPbf(source)) {
+      var name = pbfName(source);
+      return { label: name ? ('Lokal (PBF: ' + name + ')') : 'Lokal (PBF)', state: 'ok' };
+    }
+    if (source === 'osm') return { label: 'API Eksternal (Overpass)', state: 'info' };
+    return { label: 'Tidak tersedia (offline)', state: 'bad' };
+  }
+
+  function applySource(source) {
+    var info = sourceInfo(source);
+    setBadge('b-source', 'sumber: ' + info.label, info.state);
+    $('r-source').textContent = info.label;
+    if (isPbf(source) || source === 'osm') {
+      hideNotice();
+    } else {
+      showNotice('Data peta tidak tersedia: PBF lokal tidak ada & API eksternal tidak terjangkau. Hasil bersifat terbatas (offline).');
+    }
+  }
+
   function fmt(coord) {
     return coord ? coord[0].toFixed(5) + ', ' + coord[1].toFixed(5) : '-';
   }
@@ -91,12 +139,14 @@
     $('r-dist').textContent = data.total_distance_meters != null ? (data.total_distance_meters.toLocaleString('id-ID') + ' m') : '-';
     $('r-points').textContent = data.route_coordinates ? data.route_coordinates.length : '-';
     $('r-radius').textContent = data.graph_radius_meters != null ? ((data.graph_radius_meters / 1000).toLocaleString('id-ID') + ' km') : '-';
-    $('r-source').textContent = data.source || '-';
-    setBadge('b-source', 'source: ' + (data.source || '-'), data.source === 'osm' ? 'ok' : 'warn');
-    if (data.warning) {
-      showNotice('Peringatan: ' + data.warning);
+    var src = data.source || '';
+    if (src) {
+      applySource(src);
     } else {
-      hideNotice();
+      $('r-source').textContent = '-';
+    }
+    if ((isPbf(src) || src === 'osm') && data.warning) {
+      showNotice('Peringatan: ' + data.warning);
     }
   }
 
@@ -105,6 +155,9 @@
     var btn = $('btn-route');
     btn.disabled = true;
     log('Mencari rute...');
+    showLoading('Mencari rute... (memuat data peta, bisa butuh waktu)');
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () { controller.abort(); }, 90000);
     try {
       var resp = await fetch('/api/v1/pathfinding/find-route', {
         method: 'POST',
@@ -112,18 +165,33 @@
         body: JSON.stringify({
           origin: { latitude: origin[0], longitude: origin[1] },
           destination: { latitude: dest[0], longitude: dest[1] }
-        })
+        }),
+        signal: controller.signal
       });
       var data = await parseJson(resp);
       if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
       if (routeLayer) map.removeLayer(routeLayer);
       drawRoute(data);
       renderRouteResult(data);
-      log('Rute OK: ' + data.total_distance_meters.toLocaleString('id-ID') + ' m, ' + data.route_coordinates.length + ' titik (source=' + data.source + ')' + (data.warning ? ' [demo]' : ''));
+      if (isPbf(data.source) || data.source === 'osm') {
+        log('Rute OK: ' + data.total_distance_meters.toLocaleString('id-ID') + ' m, ' + data.route_coordinates.length + ' titik (sumber=' + data.source + ')' + (data.warning ? ' — peringatan: ' + data.warning : ''));
+      } else {
+        log('Rute dihitung tanpa data peta (offline)');
+      }
     } catch (err) {
-      log('ERROR: ' + err.message);
-      renderRouteResult({ status: 'error: ' + err.message });
+      var friendly;
+      if (err && err.name === 'AbortError') {
+        friendly = 'Waktu habis (90 dtk). Area mungkin di luar cakupan peta yang dimuat — lakukan pre-warm di server dulu.';
+      } else if (err && err.message === 'Failed to fetch') {
+        friendly = 'Koneksi terputus ke server (tidak ada respons). Coba lagi, atau pastikan server berjalan.';
+      } else {
+        friendly = (err && err.message) ? err.message : String(err);
+      }
+      log('ERROR: ' + friendly);
+      renderRouteResult({ status: 'error: ' + friendly });
     } finally {
+      clearTimeout(timeoutId);
+      hideLoading();
       btn.disabled = !(origin && dest);
     }
   });
@@ -179,6 +247,7 @@
 
   $('btn-reset').addEventListener('click', function () {
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; $('btn-track').textContent = 'Mulai Lacak Posisi'; }
+    hideLoading();
     origin = null; dest = null;
     [originMarker, destMarker, liveMarker].forEach(function (m) { if (m) map.removeLayer(m); });
     originMarker = destMarker = liveMarker = null;
@@ -187,11 +256,14 @@
     $('txt-origin').textContent = '-'; $('txt-dest').textContent = '-';
     $('btn-route').disabled = true;
     $('r-status').textContent = '-'; $('r-dist').textContent = '-'; $('r-points').textContent = '-'; $('r-radius').textContent = '-'; $('r-source').textContent = '-';
+    setBadge('b-source', 'sumber: ?', '');
+    hideNotice();
     log('Peta direset.');
   });
 
   async function boot() {
     log('Memuat status server...');
+    showLoading('Memeriksa status server...');
     try {
       var resp = await fetch('/health');
       var data = await parseJson(resp);
@@ -199,11 +271,17 @@
       setBadge('b-server', 'Server: OK', 'ok');
       setBadge('b-osm', 'osmnx: ' + (data.osmnx_available ? 'tersedia' : 'tidak'), data.osmnx_available ? 'ok' : 'warn');
       setBadge('b-overpass', 'Overpass: ' + (data.overpass_reachable ? 'terjangkau' : 'terblokir/lambat'), data.overpass_reachable ? 'ok' : 'warn');
+      setBadge('b-pbf', 'PBF: ' + (data.pbf_available ? 'aktif' : 'tidak ada'), data.pbf_available ? 'ok' : 'warn');
       if (data.osmnx_error) log('INFO osmnx: ' + data.osmnx_error);
       if (data.route_test && data.route_test.ok) {
-        setBadge('b-source', 'source: ' + data.route_test.source, data.route_test.source === 'osm' ? 'ok' : 'warn');
-        log('Tes rute OK: ' + data.route_test.total_distance_meters + ' m, ' + data.route_test.route_points + ' titik (source=' + data.route_test.source + ', area ' + Math.round(data.route_test.graph_radius_meters / 1000) + ' km). Klik peta lalu Cari Rute.');
-        if (data.route_test.warning) showNotice('Peringatan: ' + data.route_test.warning);
+        var info = sourceInfo(data.route_test.source);
+        setBadge('b-source', 'sumber: ' + info.label, info.state);
+        log('Tes rute OK: ' + data.route_test.total_distance_meters + ' m, ' + data.route_test.route_points + ' titik (' + info.label.toLowerCase() + ', area ' + Math.round(data.route_test.graph_radius_meters / 1000) + ' km). Klik peta lalu Cari Rute.');
+        if ((isPbf(data.route_test.source) || data.route_test.source === 'osm') && data.route_test.warning) {
+          showNotice('Peringatan: ' + data.route_test.warning);
+        } else if (!isPbf(data.route_test.source) && data.route_test.source !== 'osm') {
+          showNotice('Data peta tidak tersedia: PBF lokal tidak ada & API eksternal tidak terjangkau. Hasil bersifat terbatas (offline).');
+        }
       } else {
         setBadge('b-server', 'Server: ERROR', 'bad');
         log('Tes rute gagal: ' + ((data.route_test && data.route_test.error) || 'response tidak valid'));
@@ -211,10 +289,12 @@
     } catch (err) {
       setBadge('b-server', 'Server: ERROR', 'bad');
       log('ERROR server: ' + err.message);
+    } finally {
+      hideLoading();
     }
   }
 
-  placePoint('origin', L.latLng(-6.1754, 106.8272));
-  placePoint('dest', L.latLng(-6.1830, 106.8360));
+  placePoint('origin', L.latLng(-6.8048, 110.8385));
+  placePoint('dest', L.latLng(-6.8100, 110.8500));
   boot();
 })();

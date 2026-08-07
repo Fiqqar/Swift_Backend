@@ -14,10 +14,18 @@
     <span class="badge" id="b-server">Server: ?</span>
     <span class="badge" id="b-osm">osmnx: ?</span>
     <span class="badge" id="b-overpass">Overpass: ?</span>
+    <span class="badge" id="b-pbf">PBF: ?</span>
     <span class="badge" id="b-source">source: ?</span>
   </div>
 </header>
 <div id="notice"></div>
+<div id="loading" class="loading">
+  <div class="loading-card">
+    <div class="spinner"></div>
+    <div id="loading-text">Menghubungi server...</div>
+    <div id="loading-time">0 dtk</div>
+  </div>
+</div>
 <main>
   <div id="map"></div>
   <div id="panel">
@@ -48,7 +56,7 @@
         <div class="row"><span>Jarak total</span><b id="r-dist">-</b></div>
         <div class="row"><span>Titik rute</span><b id="r-points">-</b></div>
         <div class="row"><span>Area peta</span><b id="r-radius">-</b></div>
-        <div class="row"><span>Sumber data</span><b id="r-source">-</b></div>
+        <div class="row"><span>Sumber peta</span><b id="r-source">-</b></div>
       </div>
       <button class="btn ghost" id="btn-reset" style="margin-top:8px;">Reset Peta</button>
     </section>

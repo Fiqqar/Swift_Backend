@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi[standard]>=0.140.13",
+    "fastapi[standard]>=0.141.1,<0.142",
     "pydantic>=2.13.4",
     "osmnx>=1.9,<2",
     "orjson>=3.11.9",
@@ -13,6 +13,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "greenlet>=3.5.4",
     "redis>=8.1.0",
+    "osmium>=4.3.1 ; python_full_version < '3.14'",
 ]
 
 [build-system]

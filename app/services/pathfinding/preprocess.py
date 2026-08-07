@@ -20,6 +20,7 @@ class PathGraph:
     radius: int = 0
     source: str = "demo"
     warning: str | None = None
+    bbox: tuple | None = None
 
 
 def dijkstra_all(graph: dict, source) -> dict:
@@ -81,6 +82,7 @@ def select_landmarks(graph: dict, locations: dict, k: int = 8) -> list:
 
 
 _MAX_WITNESS_NODES = int(os.environ.get("OSMNX_CH_WITNESS_NODES", "2500"))
+_CH_MAX_NODES = int(os.environ.get("OSMNX_CH_MAX_NODES", "80000"))
 
 
 class ContractionHierarchy:
@@ -344,7 +346,7 @@ def build_path_graph(graph, locations, ref_lat, ref_lon,
     landmarks = select_landmarks(graph, locations, landmarks_k)
     landmark_dists = [dijkstra_all(graph, lm) for lm in landmarks]
     ch = None
-    if enable_ch and not directed:
+    if enable_ch and not directed and len(graph) <= _CH_MAX_NODES:
         ch = build_ch(graph, max_witness_nodes)
     return PathGraph(graph, locations, geo, ref_lat, ref_lon,
                      landmarks, landmark_dists, ch, directed)

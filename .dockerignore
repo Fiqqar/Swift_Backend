@@ -1,0 +1,28 @@
+# VCS & env
+.git
+.gitignore
+.env
+
+# Python environments & bytecode
+.venv
+myenv
+__pycache__/
+*.pyc
+*.pyo
+
+# Rust build artifacts (sumber Cargo.toml/Cargo.lock/src/ WAJIB ikut agar
+# `maturin build` di Dockerfile berhasil; target/ hasil build boleh dibuang)
+target/
+
+# Runtime caches, data, dan dokumentasi
+cache/
+data/
+docs/
+scripts/
+*.pkl
+*.osm
+*.osm.pbf
+
+# IDE / tooling
+.vscode/
+.agents/

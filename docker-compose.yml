@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+      - /app/__pycache__
     depends_on:
       db:
         condition: service_healthy
