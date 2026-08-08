@@ -143,6 +143,7 @@ async def lifespan(app: FastAPI):
         app.state.path_graph = None
 
     city_task = None
+    cover_task = None
     from app.services.pathfinding.graph_loader import (
         load_local_graph_point,
         tiles_enabled,
@@ -160,6 +161,34 @@ async def lifespan(app: FastAPI):
                         "[STARTUP] Prewarm kota (%.4f,%.4f) gagal: %s",
                         lat, lon, exc)
         city_task = asyncio.create_task(_prewarm_city_graphs(cities))
+
+        # Prewarm sel covering (graf gang level-1) agar rute pendek (<=
+        # LOCAL_ROUTE_MAX_KM) di dalam kota langsung instan saat diminta.
+        from app.services.pathfinding.graph_loader import (
+            load_local_graph_covering,
+        )
+        _cov_off = float(os.environ.get("PREWARM_COVER_OFFSET_DEG", "0.03"))
+        _cov_n = int(os.environ.get("PREWARM_COVER_CELLS", "2"))
+
+        async def _prewarm_cover_cells(items):
+            pairs = [(0.0, 0.0), (_cov_off, _cov_off), (_cov_off, -_cov_off),
+                     (-_cov_off, _cov_off), (-_cov_off, -_cov_off)]
+            for lat, lon in items:
+                for dlat, dlon in pairs[:_cov_n]:
+                    try:
+                        await asyncio.to_thread(
+                            load_local_graph_covering, lat, lon,
+                            lat + dlat, lon + dlon, level=1)
+                        logging.getLogger("app").info(
+                            "[STARTUP] Prewarm cover (%.4f,%.4f) cell "
+                            "(%.3f,%.3f) selesai.", lat, lon, dlat, dlon)
+                    except Exception as exc:
+                        logging.getLogger("app").warning(
+                            "[STARTUP] Prewarm cover (%.4f,%.4f) cell "
+                            "(%.3f,%.3f) gagal: %s", lat, lon, dlat, dlon, exc)
+
+        if _cov_off > 0 and _cov_n > 0:
+            cover_task = asyncio.create_task(_prewarm_cover_cells(cities))
 
     app.state.region_graph = None
     region_task = None
@@ -224,6 +253,8 @@ async def lifespan(app: FastAPI):
             warmup_task.cancel()
         if city_task is not None:
             city_task.cancel()
+        if cover_task is not None:
+            cover_task.cancel()
         if region_task is not None:
             region_task.cancel()
         if base_task is not None:

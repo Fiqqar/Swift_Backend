@@ -17,6 +17,7 @@ import heapq
 import logging
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from app.services.pathfinding.core_a_star import (
@@ -94,7 +95,6 @@ def build_hierarchical(lat1: float, lon1: float,
 
     results = []
     if len(endpoints) > 1 and _PARALLEL_LOCAL:
-        from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
             futs = [ex.submit(_build, lat, lon) for lat, lon in endpoints]
             results = [f.result() for f in futs]
@@ -192,89 +192,129 @@ def _best_pair(portal_a: list, portal_b: list, dist_a: dict, dist_b: dict,
 
 def route_hierarchical(result: HierarchicalResult,
                        penalties: dict | None = None):
-    """Hitung rute 3 lapisan. Kembalikan (coords, total_dist, source, warning)."""
+    """Hitung rute 3 lapisan. Kembalikan (coords, total_dist, source, warning).
+
+    Bila graf lokal terpecah (portal ada di graf tapi tidak terjangkau dari
+    titik snap), ujung tsb di-degrade ke snap jalan utama (base) — bukan error.
+    """
     base = result.base
     base_locations = base.locations
     origin = result.origin
     dest = result.dest
+    warnings: list = []
 
-    # --- Segmen origin ---------------------------------------------------
-    if result.portal_origin:
-        start_a = find_nearest_node(origin[0], origin[1],
-                                    result.local_origin.locations)
-        if start_a is None:
-            raise AreaNotCoveredError("Origin di luar jangkauan peta!")
-        d_snap = haversine_distance(
-            origin, result.local_origin.locations[start_a])
-        if d_snap > _MAX_SNAP_DIST:
-            raise AreaNotCoveredError(
-                "Lokasi di luar jangkauan peta (tidak ada jalan di sekitar titik)!")
-        dist_a, parent_a = _dijkstra(result.local_origin.graph, start_a, penalties)
-        portal_a = [pa for pa in result.portal_origin if pa in dist_a]
-        if not portal_a:
-            raise AreaNotCoveredError("Origin tidak terhubung ke jalan utama")
+    def _snap(pg_locations: dict, lat: float, lon: float) -> int | None:
+        nid = find_nearest_node(lat, lon, pg_locations)
+        if nid is None:
+            return None
+        if haversine_distance((lat, lon), pg_locations[nid]) > _MAX_SNAP_DIST:
+            return None
+        return nid
+
+    # --- Snap origin & dest ----------------------------------------------
+    start_a = _snap(result.local_origin.locations, origin[0], origin[1]) \
+        if result.portal_origin else None
+    goal_b = _snap(result.local_dest.locations, dest[0], dest[1]) \
+        if result.portal_dest else None
+
+    # --- Dijkstra lokal origin & dest (paralel) ---------------------------
+    def _dijk_a():
+        if start_a is not None:
+            return _dijkstra(result.local_origin.graph, start_a, penalties)
+        return None
+
+    def _dijk_b():
+        if goal_b is not None:
+            rev = _reverse_graph(result.local_dest.graph)
+            return _dijkstra(rev, goal_b, penalties)
+        return None
+
+    if start_a is not None and goal_b is not None:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_a = ex.submit(_dijk_a)
+            fut_b = ex.submit(_dijk_b)
+            d_a, d_b = fut_a.result(), fut_b.result()
     else:
-        start_a = find_nearest_node(origin[0], origin[1], base_locations)
+        d_a, d_b = _dijk_a(), _dijk_b()
+
+    # --- Reachability portal; degrade ujung terpecah ke base --------------
+    if start_a is not None:
+        dist_a, parent_a = d_a
+        cand_a = [pa for pa in result.portal_origin if pa in dist_a]
+        if cand_a:
+            portal_a, local_a = cand_a, True
+        else:
+            start_a = _snap(base_locations, origin[0], origin[1])
+            if start_a is None:
+                raise AreaNotCoveredError("Origin tidak terhubung ke jalan utama")
+            dist_a, parent_a = {start_a: 0.0}, {}
+            portal_a, local_a = [start_a], False
+            warnings.append(
+                "Origin tak terjangkau jalan utama; memakai jalan utama terdekat")
+    else:
+        start_a = _snap(base_locations, origin[0], origin[1])
         if start_a is None:
             raise AreaNotCoveredError("Origin tidak dekat graf jalan")
-        dist_a = {start_a: 0.0}
-        parent_a = {}
-        portal_a = [start_a]
+        dist_a, parent_a = {start_a: 0.0}, {}
+        portal_a, local_a = [start_a], False
 
-    # --- Segmen dest -----------------------------------------------------
-    if result.portal_dest:
-        goal_b = find_nearest_node(dest[0], dest[1],
-                                   result.local_dest.locations)
-        if goal_b is None:
-            raise AreaNotCoveredError("Destinasi di luar jangkauan peta!")
-        d_snap = haversine_distance(dest, result.local_dest.locations[goal_b])
-        if d_snap > _MAX_SNAP_DIST:
-            raise AreaNotCoveredError(
-                "Lokasi di luar jangkauan peta (tidak ada jalan di sekitar titik)!")
-        rev = _reverse_graph(result.local_dest.graph)
-        dist_b, parent_b = _dijkstra(rev, goal_b, penalties)
-        portal_b = [pb for pb in result.portal_dest if pb in dist_b]
-        if not portal_b:
-            raise AreaNotCoveredError("Destinasi tidak terhubung ke jalan utama")
+    if goal_b is not None:
+        dist_b, parent_b = d_b
+        cand_b = [pb for pb in result.portal_dest if pb in dist_b]
+        if cand_b:
+            portal_b, local_b = cand_b, True
+        else:
+            goal_b = _snap(base_locations, dest[0], dest[1])
+            if goal_b is None:
+                raise AreaNotCoveredError("Destinasi tidak terhubung ke jalan utama")
+            dist_b, parent_b = {goal_b: 0.0}, {}
+            portal_b, local_b = [goal_b], False
+            warnings.append(
+                "Destinasi tak terjangkau jalan utama; memakai jalan utama terdekat")
     else:
-        goal_b = find_nearest_node(dest[0], dest[1], base_locations)
+        goal_b = _snap(base_locations, dest[0], dest[1])
         if goal_b is None:
             raise AreaNotCoveredError("Destinasi tidak dekat graf jalan")
-        dist_b = {goal_b: 0.0}
-        parent_b = {}
-        portal_b = [goal_b]
+        dist_b, parent_b = {goal_b: 0.0}, {}
+        portal_b, local_b = [goal_b], False
 
     # --- Pilih portal & rute tengah di base ------------------------------
-    if result.portal_origin and result.portal_dest:
+    if local_a and local_b:
         pair = _best_pair(portal_a, portal_b, dist_a, dist_b, base_locations)
         if pair is None:
             raise AreaNotCoveredError("Tidak ada portal yang terjangkau")
         pa, pb = pair
     else:
-        pa, pb = portal_a[0], portal_b[0]
+        pa = min(portal_a, key=lambda p: dist_a[p])
+        pb = min(portal_b, key=lambda p: dist_b[p])
 
     path_mid, cost_mid = engine_route(base, pa, pb, penalties)
     if not path_mid:
         raise AreaNotCoveredError("Rute tengah tidak ditemukan")
 
     # --- Rekonstruksi path lokal -----------------------------------------
-    if result.portal_origin:
+    if local_a:
         path_a = _reconstruct(parent_a, start_a, pa)
+        coords_a = [result.local_origin.locations[n] for n in path_a]
     else:
         path_a = [pa]
-    if result.portal_dest:
+        coords_a = [base_locations[pa]]
+    if local_b:
         path_b = _reconstruct_rev(parent_b, pb, goal_b)
+        coords_b = [result.local_dest.locations[n] for n in path_b[1:]]
     else:
         path_b = [pb]
+        coords_b = []
 
     # --- Koordinat + total -------------------------------------------------
-    coords = []
-    for nid in path_a:
-        coords.append(result.local_origin.locations[nid])
+    coords = coords_a
     for nid in path_mid[1:]:
         coords.append(base_locations[nid])
-    for nid in path_b[1:]:
-        coords.append(result.local_dest.locations[nid])
+    coords.extend(coords_b)
 
     total = dist_a[pa] + cost_mid + dist_b[pb]
-    return coords, total, result.source, result.warning
+
+    warning = result.warning
+    if warnings:
+        warning = (warning + "; " if warning else "") + "; ".join(warnings)
+    return coords, total, result.source, warning

@@ -60,8 +60,9 @@ _DISK_CACHE_DIR = os.environ.get(
 _ENABLE_CH = os.environ.get("OSMNX_ENABLE_CH", "1") == "1"
 _USE_LOCAL_PBF = os.environ.get("USE_LOCAL_PBF", "1") == "1"
 _GRAPH_CACHE_SIZE = int(os.environ.get("OSMNX_GRAPH_CACHE_SIZE", "32"))
-_PG_CACHE_SIZE = int(os.environ.get("OSMNX_PG_CACHE_SIZE", "32"))
+_PG_CACHE_SIZE = int(os.environ.get("OSMNX_PG_CACHE_SIZE", "16"))
 _TILE_WORKERS = int(os.environ.get("OSMNX_TILE_PARALLEL", "1"))
+_COVER_PAD_M = float(os.environ.get("COVER_PAD_M", "2500"))
 _RADIUS_BUCKET = int(os.environ.get("OSMNX_RADIUS_BUCKET", "5000"))
 _DRIVE_HIGHWAYS = {
     "motorway", "motorway_link", "trunk", "trunk_link",
@@ -305,6 +306,27 @@ def _save_disk(path: str, data) -> None:
         os.replace(tmp, path)
     except Exception as exc:
         logger.warning("Gagal menyimpan cache disk: %s", exc)
+
+
+_saving_keys: set = set()
+
+
+def _save_disk_async(path: str, data, key: tuple) -> None:
+    """Simpan pickle di thread background agar cold-build tidak menunggu
+    serialisasi (bisa 4-5 s). Atomic via _save_disk (tmp+replace)."""
+    with _CACHE_LOCK:
+        if key in _saving_keys:
+            return
+        _saving_keys.add(key)
+
+    def _worker():
+        try:
+            _save_disk(path, data)
+        finally:
+            with _CACHE_LOCK:
+                _saving_keys.discard(key)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def load_osm_graph_by_point(lat: float, lon: float,
@@ -826,7 +848,7 @@ def load_local_graph_point(lat: float, lon: float,
 
     with _CACHE_LOCK:
         _PG_CACHE[key] = pg
-    _save_disk(path, pg)
+    _save_disk_async(path, pg, key)
     return pg
 
 
@@ -846,7 +868,7 @@ def load_local_graph_covering(lat1: float, lon1: float,
             "Area di luar cakupan tile. Jalankan scripts/split_tiles.py.")
 
     m = _tiles_manifest()
-    pad_deg = (_LOCAL_RADIUS * 1.05) / 111320.0
+    pad_deg = _COVER_PAD_M / 111320.0
     rect = _rect_bbox(lat1, lon1, lat2, lon2, pad_deg)
     # Kuantisasi rect ke grid kasar (_COVER_GRID) agar pasangan titik yang
     # berdekatan berbagi satu graf penutup (reuse cache per area).
@@ -902,8 +924,11 @@ def load_local_graph_covering(lat1: float, lon1: float,
             "Tidak ada data jalan di tile sekitar area yang diminta.")
 
     t_build = perf_counter()
+    # Covering dipakai langsung lewat Rust A* (engine_route); landmark+CH
+    # tidak diperlukan -> build cepat & pickle kecil. Fallback Python tetap
+    # aman (shortest_path jatuh ke A* biasa bila landmark kosong).
     pg = build_path_graph(graph, locations, mid_lat, mid_lon,
-                          enable_ch=_ENABLE_CH)
+                          landmarks_k=0, enable_ch=False)
     _perf("PathGraph Local Cover Build", t_build)
     pg.radius = int(radius)
     pg.source = "tile:%s:l%d:cover" % (m["stem"], level)
@@ -912,7 +937,7 @@ def load_local_graph_covering(lat1: float, lon1: float,
 
     with _CACHE_LOCK:
         _PG_CACHE[key] = pg
-    _save_disk(path, pg)
+    _save_disk_async(path, pg, key)
     return pg
 
 
@@ -1050,14 +1075,62 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
     return graph, locations
 
 
+_LOC_BUCKET = 1.0 / 1000.0  # 0.001 deg (~111 m) per sel index
+
+_loc_index_cache: dict = {}
+
+
+def _loc_index(locations: dict):
+    """Index grid (bucket ~0.001 deg) per dict lokasi, cache by id+len."""
+    key = id(locations)
+    entry = _loc_index_cache.get(key)
+    if entry is not None and entry[0] == len(locations):
+        return entry[1]
+    scale = int(round(1.0 / _LOC_BUCKET))
+    idx = {}
+    for nid, (lat, lon) in locations.items():
+        b = (int(round(lat * scale)), int(round(lon * scale)))
+        idx.setdefault(b, []).append(nid)
+    _loc_index_cache[key] = (len(locations), idx)
+    if len(_loc_index_cache) > 64:
+        _loc_index_cache.clear()
+    return idx
+
+
 def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
     nearest_node = None
     min_dist = float('inf')
-
-    for node_id, coord in locations.items():
-        dist = haversine_distance((lat, lon), coord)
-        if dist < min_dist:
-            min_dist = dist
-            nearest_node = node_id
-
+    if not locations:
+        return None
+    scale = int(round(1.0 / _LOC_BUCKET))
+    bc = (int(round(lat * scale)), int(round(lon * scale)))
+    idx = _loc_index(locations)
+    # Cari ring demi ring (kotak membesar); berhenti saat batas ring >= jarak
+    # kandidat terbaik (node di ring lebih jauh tak mungkin lebih dekat).
+    for r in range(0, 512):
+        found_any = False
+        for c in range(bc[1] - r, bc[1] + r + 1):
+            for rr in (bc[0] - r, bc[0] + r):
+                for nid in idx.get((rr, c), ()):
+                    found_any = True
+                    d = haversine_distance((lat, lon), locations[nid])
+                    if d < min_dist:
+                        min_dist = d
+                        nearest_node = nid
+        for rr in range(bc[0] - r + 1, bc[0] + r):
+            for c in (bc[1] - r, bc[1] + r):
+                for nid in idx.get((rr, c), ()):
+                    found_any = True
+                    d = haversine_distance((lat, lon), locations[nid])
+                    if d < min_dist:
+                        min_dist = d
+                        nearest_node = nid
+        if found_any and min_dist <= r * _LOC_BUCKET * 111320.0:
+            break
+    if nearest_node is None:
+        for node_id, coord in locations.items():
+            d = haversine_distance((lat, lon), coord)
+            if d < min_dist:
+                min_dist = d
+                nearest_node = node_id
     return nearest_node

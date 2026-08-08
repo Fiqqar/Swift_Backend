@@ -19,10 +19,11 @@ from app.services.pathfinding.core_a_star import haversine_distance
 from app.services.pathfinding.core_engine import route as engine_route
 from app.services.pathfinding.graph_loader import (
     AreaNotCoveredError,
-    _HIERARCHICAL_MIN_M,
     _LOCAL_ROUTE_MAX_M,
+    base_available,
     find_nearest_node,
     hierarchical_available,
+    load_base_graph,
     load_graph_covering,
     load_local_graph_covering,
     region_graph_cached,
@@ -59,13 +60,19 @@ def _covers(pg, lat: float, lon: float) -> bool:
 def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
     """Pilih strategi rute. Kembalikan ("graph", pg) atau ("hierarchical", h).
 
+    Prioritas ujung origin/dest adalah presisi GANG (residential), sehingga
+    semua rute > LOCAL_ROUTE_MAX_KM memakai hierarchical (graf gang level-1
+    di kedua ujung + base jalan utama di tengah). Base/region hanya fallback
+    bila tile/hierarchical tidak tersedia.
+
     Urutan:
-      0. local level-1 (gang) dari tile bila jarak pendek (<= LOCAL_ROUTE_MAX_KM)
-      1. path_graph (warmup kecil)
-      2. region_graph (bbox region)
-      3. hierarchical (tile local + base jalan utama) bila jarak jauh
-      4. load_graph_covering (satu graf penutup) bila dynamic/prewarm
-      5. fail-fast (di luar cakupan / non-PBF)
+      0. covering level-1 (gang) dari tile bila jarak pendek (<= LOCAL_ROUTE_MAX_KM)
+      1. hierarchical (tile gang lokal + base jalan utama) untuk jarak lebih jauh
+      2. path_graph (warmup kecil)  [fallback, tanpa gang]
+      3. region_graph (bbox region) [fallback, tanpa gang]
+      4. base_graph (jalan utama se-Jawa) [fallback terakhir]
+      5. load_graph_covering (satu graf penutup) bila dynamic/prewarm
+      6. fail-fast (di luar cakupan / non-PBF)
     """
     dist = haversine_distance((lat1, lon1), (lat2, lon2))
     if (dist <= _LOCAL_ROUTE_MAX_M
@@ -73,6 +80,27 @@ def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
             and tiles_contain(lat1, lon1, lat2, lon2)):
         return ("graph", load_local_graph_covering(lat1, lon1, lat2, lon2,
                                                    level=1))
+    if (dist > _LOCAL_ROUTE_MAX_M
+            and hierarchical_available(lat1, lon1, lat2, lon2)):
+        try:
+            return ("hierarchical", build_hierarchical(lat1, lon1, lat2, lon2))
+        except AreaNotCoveredError as e:
+            logger.info(
+                "Hierarchical tak tersedia (%s), fallback ke graf tanpa gang.",
+                e)
+    plan = _resolve_fallback_graph(app, lat1, lon1, lat2, lon2)
+    if plan is not None:
+        return plan
+    raise AreaNotCoveredError(
+        "Area di luar cakupan peta yang dimuat. Pre-warm cache dengan "
+        "`python scripts/prewarm_route.py <lat1> <lon1> <lat2> <lon2>` "
+        "atau perbesar REGION_GRAPH_BBOX di .env.")
+
+
+def _resolve_fallback_graph(app, lat1: float, lon1: float,
+                            lat2: float, lon2: float):
+    """Graf fallback (tanpa gang) bila hierarchical gagal/tak tersedia.
+    Urutan: path_graph (warmup) -> region_graph -> base_graph -> covering."""
     preload = getattr(app.state, "path_graph", None)
     if (preload is not None
             and _covers(preload, lat1, lon1)
@@ -83,16 +111,14 @@ def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
             and _covers(region, lat1, lon1)
             and _covers(region, lat2, lon2)):
         return ("graph", region)
-    if (dist > _HIERARCHICAL_MIN_M
-            and hierarchical_available(lat1, lon1, lat2, lon2)):
-        return ("hierarchical", build_hierarchical(lat1, lon1, lat2, lon2))
+    if base_available():
+        base = load_base_graph()
+        if (_covers(base, lat1, lon1) and _covers(base, lat2, lon2)):
+            return ("graph", base)
     if (os.environ.get("OSMNX_ALLOW_DYNAMIC_LOAD", "0") == "1"
             or region_graph_cached(lat1, lon1, lat2, lon2)):
         return ("graph", load_graph_covering(lat1, lon1, lat2, lon2))
-    raise AreaNotCoveredError(
-        "Area di luar cakupan peta yang dimuat. Pre-warm cache dengan "
-        "`python scripts/prewarm_route.py <lat1> <lon1> <lat2> <lon2>` "
-        "atau perbesar REGION_GRAPH_BBOX di .env.")
+    return None
 
 
 def _hier_cache_key(lat1: float, lon1: float,
@@ -145,11 +171,24 @@ async def find_route(payload: RouteRequest, request: Request):
     penalties = await load_penalties(redis)
 
     if plan[0] == "hierarchical":
-        response = await _route_hierarchical(
-            plan[1], redis, penalties, lat1, lon1, lat2, lon2)
-        if response is None:
-            raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
-        return response
+        try:
+            response = await _route_hierarchical(
+                plan[1], redis, penalties, lat1, lon1, lat2, lon2)
+        except HTTPException as e:
+            if e.status_code != 400:
+                raise
+            logger.info(
+                "Hierarchical gagal (%s), fallback ke graf tanpa gang.",
+                e.detail)
+            fb = _resolve_fallback_graph(
+                request.app, lat1, lon1, lat2, lon2)
+            if fb is None:
+                raise
+            plan = fb
+        else:
+            if response is None:
+                raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+            return response
 
     pg = plan[1]
     start_node = await run_in_threadpool(
