@@ -52,7 +52,9 @@ def select_landmarks(graph: dict, locations: dict, k: int = 8) -> list:
     nodes = [n for n in locations if n in graph]
     if not nodes:
         return []
-    k = max(1, min(k, len(nodes)))
+    k = max(0, min(k, len(nodes)))
+    if k == 0:
+        return []
 
     seed = nodes[0]
     landmarks = [seed]

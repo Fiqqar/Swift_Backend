@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import os
@@ -12,6 +13,7 @@ from app.services.pathfinding.preprocess import (
 )
 from app.services.pathfinding.pbf_registry import (
     PbfEntry,
+    discover_pbfs,
     pbfs_available,
     select_pbf,
 )
@@ -82,6 +84,21 @@ DEFAULT_REGION_BBOX = (-7.10, 110.25, -6.40, 111.20)
 # Level filter jalan utk graf regional (2 = semua jalan layak kendaraan minus
 # jalan kecil). Level 3 (tol/trunk/primary saja) hanya dipakai rute jarak jauh.
 REGION_LEVEL = int(os.environ.get("OSMNX_REGION_LEVEL", "2"))
+
+# --- Hierarchical routing (lapisan local tile + base graph) ---
+# Local: graf gang (level 1) di sekitar origin/tujuan, dibangun dari TILE
+# (hasil scripts/split_tiles.py) agar tidak scan PBF raksasa per request.
+_TILES_ENABLED = os.environ.get("TILES_ENABLED", "1") == "1"
+_TILES_DIR = os.environ.get("TILES_DIR", os.path.join("data", "tiles"))
+_TILE_DEG = float(os.environ.get("TILE_DEG", "0.2"))
+_TILE_BUFFER_DEG = float(os.environ.get("TILE_BUFFER_DEG", "0.01"))
+# Base: graf jalan utama seluruh Jawa (level 3), dibangun sekali offline,
+# dimuat lazy ke RAM pada request jarak jauh pertama.
+_BASE_GRAPH_ENABLED = os.environ.get("BASE_GRAPH_ENABLED", "1") == "1"
+_BASE_LEVEL = int(os.environ.get("BASE_GRAPH_LEVEL", "3"))
+_LOCAL_RADIUS = int(os.environ.get("LOCAL_RADIUS", "3000"))
+_LOCAL_RADIUS_MAX = int(os.environ.get("LOCAL_RADIUS_MAX", "10000"))
+_HIERARCHICAL_MIN_M = float(os.environ.get("HIERARCHICAL_MIN_KM", "25")) * 1000.0
 
 
 class _LRUDict(dict):
@@ -378,14 +395,37 @@ def load_graph_from_pbf(pbf_path: str,
 
     allowed = _DRIVE_HIGHWAYS if highway_filter is None else highway_filter
 
+    class _RefCollector(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.needed = set()
+
+        def way(self, w):
+            tags = dict(w.tags)
+            if tags.get("highway") not in allowed:
+                return
+            if tags.get("area") == "yes":
+                return
+            for nd in w.nodes:
+                self.needed.add(nd.ref)
+
+    reader = osmium.io.Reader(pbf_path, types=osmium.osm.WAY)
+    collector = _RefCollector()
+    osmium.apply(reader, collector)
+    reader.close()
+    needed = collector.needed
+
     class _RoadNetHandler(osmium.SimpleHandler):
-        def __init__(self, bbox):
+        def __init__(self, bbox, needed):
             super().__init__()
             self.bbox = bbox
+            self.needed = needed
             self.nodes = {}
             self.ways = []
 
         def node(self, n):
+            if n.id not in self.needed:
+                return
             if not n.location.valid():
                 return
             lat, lon = n.location.lat, n.location.lon
@@ -403,7 +443,7 @@ def load_graph_from_pbf(pbf_path: str,
                 return
             self.ways.append(([nd.ref for nd in w.nodes], tags))
 
-    handler = _RoadNetHandler(bbox)
+    handler = _RoadNetHandler(bbox, needed)
     reader = osmium.io.Reader(pbf_path)
     osmium.apply(reader, handler)
     reader.close()
@@ -580,6 +620,234 @@ def region_graph_cached(lat1: float, lon1: float,
         mid_lat, mid_lon, need, (lat1, lon1), (lat2, lon2), pbf, level=level)
     key = _cache_key(mid_lat, mid_lon, need, tag)
     return os.path.exists(_pg_disk_path(key))
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical routing: lapisan LOCAL (tile) dan BASE (graf utama seluruh Jawa)
+# ---------------------------------------------------------------------------
+
+_tiles_manifest_cache = None
+_tiles_manifest_ready = False
+
+
+def _tiles_manifest() -> dict | None:
+    """Baca manifest grid tile (dari scripts/split_tiles.py). None = tidak ada."""
+    global _tiles_manifest_cache, _tiles_manifest_ready
+    if _tiles_manifest_ready:
+        return _tiles_manifest_cache
+    _tiles_manifest_cache = None
+    _tiles_manifest_ready = True
+    if not _TILES_ENABLED:
+        return None
+    path = os.path.join(_TILES_DIR, "manifest.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            m = json.load(fh)
+        if not m.get("pbf_id") or not m.get("stem"):
+            return None
+        # Tile basi bila PBF sumbernya berubah (pbf_id menyandikan nama+mtime).
+        current = None
+        for entry in discover_pbfs():
+            if entry.stem == m.get("stem"):
+                current = entry
+                break
+        if current is not None and current.pbf_id != m.get("pbf_id"):
+            logger.warning(
+                "Tile basi untuk %s (pbf_id berubah). Jalankan "
+                "scripts/split_tiles.py ulang.", m.get("stem"))
+            return None
+        _tiles_manifest_cache = m
+    except Exception as exc:
+        logger.debug("Manifest tile tidak terbaca: %s", exc)
+    return _tiles_manifest_cache
+
+
+def tiles_enabled() -> bool:
+    return _TILES_ENABLED and _tiles_manifest() is not None
+
+
+def _tile_files_for_point(lat: float, lon: float, radius: int) -> list:
+    """Daftar file tile yang menutup area (radius) di sekitar titik."""
+    m = _tiles_manifest()
+    if m is None:
+        return []
+    deg = m["deg"]
+    buf = m["buffer_deg"]
+    olat = m["origin_lat"]
+    olon = m["origin_lon"]
+    minlon, minlat, maxlon, maxlat = _pbf_bbox(lat, lon, radius)
+    minlat -= buf
+    minlon -= buf
+    maxlat += buf
+    maxlon += buf
+    r0 = int((minlat - olat) // deg)
+    r1 = int((maxlat - olat) // deg)
+    c0 = int((minlon - olon) // deg)
+    c1 = int((maxlon - olon) // deg)
+    base = os.path.join(_TILES_DIR, m["stem"])
+    out = []
+    for row in range(r0, r1 + 1):
+        for col in range(c0, c1 + 1):
+            p = os.path.join(
+                base, "tile_r%03d_c%03d.osm.pbf" % (row, col))
+            if os.path.exists(p):
+                out.append(p)
+    return out
+
+
+def _tile_tag(level: int) -> str:
+    m = _tiles_manifest()
+    stem = m["stem"] if m else "tile"
+    return f"tile_{stem}_l{level}"
+
+
+def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
+    """Baca graf jalan (level 1 = semua _DRIVE_HIGHWAYS) dari tile terdekat."""
+    tiles = _tile_files_for_point(lat, lon, radius)
+    if not tiles:
+        raise AreaNotCoveredError(
+            "Tidak ada tile lokal untuk area ini. Jalankan "
+            "scripts/split_tiles.py terlebih dahulu.")
+    box = _pbf_bbox(lat, lon, radius)
+    graph = {}
+    locations = {}
+    t_tile = perf_counter()
+    for path in tiles:
+        g, loc = load_graph_from_pbf(
+            path, bbox=box, highway_filter=_LEVEL_HIGHWAYS[level])
+        graph.update(g)
+        locations.update(loc)
+    _perf("Tile Scan", t_tile)
+    if not graph:
+        raise AreaNotCoveredError(
+            "Tidak ada data jalan di tile sekitar titik yang diminta.")
+    m = _tiles_manifest()
+    stem = m["stem"] if m else "tile"
+    return graph, locations, f"tile:{stem}:l{level}", None
+
+
+def load_local_graph_point(lat: float, lon: float,
+                           radius: int = _LOCAL_RADIUS,
+                           level: int = 1) -> PathGraph:
+    """PathGraph lokal (gang) dari tile di sekitar titik, dicache disk+RAM."""
+    if not _TILES_ENABLED:
+        raise AreaNotCoveredError(
+            "Tile lokal dinonaktifkan (TILES_ENABLED=0).")
+    tag = _tile_tag(level)
+    key = _cache_key(lat, lon, radius, tag)
+    lat, lon = key[0], key[1]
+
+    with _CACHE_LOCK:
+        if key in _PG_CACHE:
+            return _PG_CACHE[key]
+
+    path = _pg_disk_path(key)
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as fh:
+                pg = pickle.load(fh)
+            if getattr(pg, "bbox", None) is None:
+                pg.bbox = _pbf_bbox(lat, lon, radius)
+            with _CACHE_LOCK:
+                _PG_CACHE[key] = pg
+            return pg
+        except Exception as exc:
+            logger.warning("Cache PathGraph lokal tidak terbaca: %s", exc)
+
+    graph, locations, source, warning = _load_local_raw(lat, lon, radius, level)
+    t_build = perf_counter()
+    pg = build_path_graph(graph, locations, lat, lon, enable_ch=_ENABLE_CH)
+    _perf("PathGraph Local Build", t_build)
+    pg.radius = int(radius)
+    pg.source = source
+    pg.warning = warning
+    pg.bbox = _pbf_bbox(lat, lon, radius)
+
+    with _CACHE_LOCK:
+        _PG_CACHE[key] = pg
+    _save_disk(path, pg)
+    return pg
+
+
+# --- Base graph (jalan utama seluruh Jawa, level 3) ---
+
+_base_lock = threading.Lock()
+_base_pg: PathGraph | None = None
+
+
+def base_pickle_path() -> str | None:
+    """Lokasi pickle base graph bila ada (cocok dgn PBF aktif)."""
+    suffix = "_l%d.pkl" % _BASE_LEVEL
+    prefix = "base_v3_"
+    try:
+        names = [n for n in os.listdir(_DISK_CACHE_DIR)
+                 if n.startswith(prefix) and n.endswith(suffix)]
+    except OSError:
+        return None
+    if not names:
+        return None
+    ids = {e.pbf_id for e in discover_pbfs()}
+    for name in names:
+        if name[len(prefix):-len(suffix)] in ids:
+            return os.path.join(_DISK_CACHE_DIR, name)
+    names.sort()
+    return os.path.join(_DISK_CACHE_DIR, names[-1])
+
+
+def base_available() -> bool:
+    return _BASE_GRAPH_ENABLED and base_pickle_path() is not None
+
+
+def hierarchical_available(lat1: float, lon1: float,
+                           lat2: float, lon2: float) -> bool:
+    """True bila lapisan hierarchical (tile+base) siap utk pasangan O->D."""
+    if not tiles_enabled() or not base_available():
+        return False
+    m = _tiles_manifest()
+    if not m:
+        return False
+    entry = None
+    for e in discover_pbfs():
+        if e.pbf_id == m["pbf_id"]:
+            entry = e
+            break
+    if entry is None:
+        return False
+    return (entry.contains(lat1, lon1) and entry.contains(lat2, lon2))
+
+
+def base_loaded() -> bool:
+    return _base_pg is not None
+
+
+def base_bbox() -> tuple | None:
+    return getattr(_base_pg, "bbox", None)
+
+
+def load_base_graph() -> PathGraph:
+    """Muat base graph (lazy, thread-safe). Dipanggil dari threadpool."""
+    global _base_pg
+    if _base_pg is not None:
+        return _base_pg
+    with _base_lock:
+        if _base_pg is not None:
+            return _base_pg
+        if not _BASE_GRAPH_ENABLED:
+            raise AreaNotCoveredError(
+                "Base graph dinonaktifkan (BASE_GRAPH_ENABLED=0).")
+        path = base_pickle_path()
+        if path is None:
+            raise AreaNotCoveredError(
+                "Base graph belum tersedia. Jalankan "
+                "scripts/build_base_graph.py sekali, lalu kirim hasilnya "
+                "bersama data/pbf ke server.")
+        t_load = perf_counter()
+        with open(path, "rb") as fh:
+            pg = pickle.load(fh)
+        _perf("Base Graph Load", t_load)
+        _base_pg = pg
+        logger.info("[PERF] Base graph dimuat dari %s", path)
+        return pg
 
 
 def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):

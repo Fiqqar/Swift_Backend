@@ -73,6 +73,32 @@ def _demo_pair():
     return (lat1, lon1), (lat2, lon2)
 
 
+def _prewarm_cities() -> list:
+    """Baca PREWARM_CITIES (lat,lon dipisah '|').
+
+    Kota prioritas: graf local (dari tile) dibangun di background saat
+    startup agar rute dari/ke kota itu langsung instan.
+    """
+    raw = os.environ.get("PREWARM_CITIES", "").strip()
+    if not raw:
+        return []
+    cities = []
+    for part in raw.split("|"):
+        part = part.strip()
+        if not part:
+            continue
+        coords = [c.strip() for c in part.split(",")]
+        try:
+            if len(coords) == 2:
+                cities.append((float(coords[0]), float(coords[1])))
+            else:
+                raise ValueError("harus 2 angka")
+        except ValueError:
+            logging.getLogger("app").warning(
+                "PREWARM_CITIES tidak valid, dilewati: %s", part)
+    return cities
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.services.pathfinding.graph_loader import (
@@ -115,6 +141,25 @@ async def lifespan(app: FastAPI):
             warmup_task = asyncio.create_task(_warmup_remaining(pairs[1:]))
     else:
         app.state.path_graph = None
+
+    city_task = None
+    from app.services.pathfinding.graph_loader import (
+        load_local_graph_point,
+        tiles_enabled,
+    )
+    cities = _prewarm_cities()
+    if cities and tiles_enabled():
+        async def _prewarm_city_graphs(items):
+            for lat, lon in items:
+                try:
+                    await asyncio.to_thread(load_local_graph_point, lat, lon)
+                    logging.getLogger("app").info(
+                        "[STARTUP] Prewarm kota (%.4f,%.4f) selesai.", lat, lon)
+                except Exception as exc:
+                    logging.getLogger("app").warning(
+                        "[STARTUP] Prewarm kota (%.4f,%.4f) gagal: %s",
+                        lat, lon, exc)
+        city_task = asyncio.create_task(_prewarm_city_graphs(cities))
 
     app.state.region_graph = None
     region_task = None
@@ -169,6 +214,8 @@ async def lifespan(app: FastAPI):
     finally:
         if warmup_task is not None:
             warmup_task.cancel()
+        if city_task is not None:
+            city_task.cancel()
         if region_task is not None:
             region_task.cancel()
         await close_redis(redis_client)
@@ -322,6 +369,39 @@ def _build_health():
         except Exception as exc:
             route_test = {"ok": False, "error": str(exc)}
 
+    from app.services.pathfinding.graph_loader import (
+        base_available,
+        base_bbox,
+        base_loaded,
+        tiles_enabled,
+    )
+    hierarchical_info = {
+        "tiles_enabled": tiles_enabled(),
+        "base_available": base_available(),
+        "base_loaded": base_loaded(),
+        "base_bbox": base_bbox(),
+    }
+    hierarchical_test = getattr(app.state, "hierarchical_test", None)
+    if (hierarchical_test is None and base_loaded() and tiles_enabled()):
+        try:
+            from app.services.pathfinding.hierarchical import (
+                build_hierarchical,
+                route_hierarchical,
+            )
+            hier = build_hierarchical(
+                -6.8048, 110.8385, -6.1751, 106.8650)
+            coords, total, _src, warn = route_hierarchical(hier)
+            hierarchical_test = {
+                "ok": bool(coords),
+                "total_distance_meters": round(total, 2) if coords else None,
+                "route_points": len(coords) if coords else 0,
+                "warning": warn,
+            }
+            app.state.hierarchical_test = hierarchical_test
+        except Exception as exc:
+            hierarchical_test = {"ok": False, "error": str(exc)}
+            app.state.hierarchical_test = hierarchical_test
+
     return JSONResponse({
         "status": "ok",
         "app": app.title,
@@ -331,6 +411,8 @@ def _build_health():
         "pbf_available": pbf_available_local,
         "overpass_reachable": overpass_reachable,
         "route_test": route_test,
+        "hierarchical": hierarchical_info,
+        "hierarchical_test": hierarchical_test,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 

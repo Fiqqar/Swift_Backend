@@ -19,9 +19,15 @@ from app.services.pathfinding.core_a_star import haversine_distance
 from app.services.pathfinding.core_engine import route as engine_route
 from app.services.pathfinding.graph_loader import (
     AreaNotCoveredError,
+    _HIERARCHICAL_MIN_M,
     find_nearest_node,
+    hierarchical_available,
     load_graph_covering,
     region_graph_cached,
+)
+from app.services.pathfinding.hierarchical import (
+    build_hierarchical,
+    route_hierarchical,
 )
 
 router = APIRouter()
@@ -46,20 +52,33 @@ def _covers(pg, lat: float, lon: float) -> bool:
     return d <= pg.radius + _COVER_MARGIN
 
 
-def _resolve_graph(app, lat1: float, lon1: float, lat2: float, lon2: float):
+def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
+    """Pilih strategi rute. Kembalikan ("graph", pg) atau ("hierarchical", h).
+
+    Urutan:
+      1. path_graph (warmup kecil)
+      2. region_graph (bbox region)
+      3. hierarchical (tile local + base jalan utama) bila jarak jauh
+      4. load_graph_covering (satu graf penutup) bila dynamic/prewarm
+      5. fail-fast (di luar cakupan / non-PBF)
+    """
     preload = getattr(app.state, "path_graph", None)
     if (preload is not None
             and _covers(preload, lat1, lon1)
             and _covers(preload, lat2, lon2)):
-        return preload
+        return ("graph", preload)
     region = getattr(app.state, "region_graph", None)
     if (region is not None
             and _covers(region, lat1, lon1)
             and _covers(region, lat2, lon2)):
-        return region
+        return ("graph", region)
+    dist = haversine_distance((lat1, lon1), (lat2, lon2))
+    if (dist > _HIERARCHICAL_MIN_M
+            and hierarchical_available(lat1, lon1, lat2, lon2)):
+        return ("hierarchical", build_hierarchical(lat1, lon1, lat2, lon2))
     if (os.environ.get("OSMNX_ALLOW_DYNAMIC_LOAD", "0") == "1"
             or region_graph_cached(lat1, lon1, lat2, lon2)):
-        return load_graph_covering(lat1, lon1, lat2, lon2)
+        return ("graph", load_graph_covering(lat1, lon1, lat2, lon2))
     raise AreaNotCoveredError(
         "Area di luar cakupan peta yang dimuat. Pre-warm cache dengan "
         "`python scripts/prewarm_route.py <lat1> <lon1> <lat2> <lon2>` "
@@ -71,14 +90,47 @@ async def find_route(payload: RouteRequest, request: Request):
     lat1, lon1 = payload.origin.latitude, payload.origin.longitude
     lat2, lon2 = payload.destination.latitude, payload.destination.longitude
     try:
-        pg = await run_in_threadpool(_resolve_graph, request.app, lat1, lon1, lat2, lon2)
+        plan = await run_in_threadpool(
+            _resolve_plan, request.app, lat1, lon1, lat2, lon2)
     except AreaNotCoveredError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
 
-    start_node = await run_in_threadpool(find_nearest_node, lat1, lon1, pg.locations)
-    goal_node = await run_in_threadpool(find_nearest_node, lat2, lon2, pg.locations)
+    redis = getattr(request.app.state, "redis", None)
+    penalties = await load_penalties(redis)
+
+    if plan[0] == "hierarchical":
+        hier = plan[1]
+        q = (round(lat1, 4), round(lon1, 4), round(lat2, 4), round(lon2, 4))
+        scope = "hier:%s:%s:%s:%s" % q
+        key = route_key(scope, 0, 0, penalties)
+        cached = await get_route(redis, key)
+        if cached is not None:
+            return RouteResponse(**cached)
+        try:
+            coords, total, source, warning = await run_in_threadpool(
+                route_hierarchical, hier, penalties)
+        except AreaNotCoveredError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not coords:
+            raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+        response = RouteResponse(
+            status="success",
+            total_distance_meters=round(total, 2),
+            route_coordinates=coords,
+            source=source,
+            warning=warning,
+            graph_radius_meters=None,
+        )
+        await set_route(redis, key, response.model_dump())
+        return response
+
+    pg = plan[1]
+    start_node = await run_in_threadpool(
+        find_nearest_node, lat1, lon1, pg.locations)
+    goal_node = await run_in_threadpool(
+        find_nearest_node, lat2, lon2, pg.locations)
 
     if start_node is None or goal_node is None:
         raise HTTPException(status_code=400, detail="Lokasi di luar jangkauan peta!")
@@ -91,8 +143,6 @@ async def find_route(payload: RouteRequest, request: Request):
             detail="Lokasi di luar jangkauan peta (tidak ada jalan di sekitar titik)!",
         )
 
-    redis = getattr(request.app.state, "redis", None)
-    penalties = await load_penalties(redis)
     scope = graph_scope(pg)
     key = route_key(scope, start_node, goal_node, penalties)
 
