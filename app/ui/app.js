@@ -157,7 +157,7 @@
     log('Mencari rute...');
     showLoading('Mencari rute... (memuat data peta, bisa butuh waktu)');
     var controller = new AbortController();
-    var timeoutId = setTimeout(function () { controller.abort(); }, 90000);
+    var timeoutId = setTimeout(function () { controller.abort(); }, 300000);
     try {
       var resp = await fetch('/api/v1/pathfinding/find-route', {
         method: 'POST',
@@ -181,7 +181,7 @@
     } catch (err) {
       var friendly;
       if (err && err.name === 'AbortError') {
-        friendly = 'Waktu habis (90 dtk). Area mungkin di luar cakupan peta yang dimuat — lakukan pre-warm di server dulu.';
+        friendly = 'Waktu habis (5 mnt). Area mungkin di luar cakupan peta yang dimuat — lakukan pre-warm di server dulu.';
       } else if (err && err.message === 'Failed to fetch') {
         friendly = 'Koneksi terputus ke server (tidak ada respons). Coba lagi, atau pastikan server berjalan.';
       } else {

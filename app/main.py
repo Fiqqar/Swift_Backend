@@ -190,6 +190,14 @@ async def lifespan(app: FastAPI):
                 "pre-build).")
             region_task = asyncio.create_task(_load_region())
 
+    base_task = None
+    from app.services.pathfinding.graph_loader import base_available, load_base_graph
+    if base_available():
+        async def _load_base():
+            await asyncio.to_thread(load_base_graph)
+            logging.getLogger("app").info("[STARTUP] Base graph loaded.")
+        base_task = asyncio.create_task(_load_base())
+
     from app.core.database import SessionLocal, dispose_db, init_db
     try:
         await init_db()
@@ -218,6 +226,8 @@ async def lifespan(app: FastAPI):
             city_task.cancel()
         if region_task is not None:
             region_task.cancel()
+        if base_task is not None:
+            base_task.cancel()
         await close_redis(redis_client)
         try:
             await dispose_db()

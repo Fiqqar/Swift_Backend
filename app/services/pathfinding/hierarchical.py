@@ -38,6 +38,8 @@ logger = logging.getLogger("pathfinding")
 _MAX_SNAP_DIST = float(os.environ.get("MAX_SNAP_DIST", "1500"))
 _MAX_PAIR_PRODUCT = 100000
 _GROWTH_FACTOR = 1.5
+# Bangun graf local origin & tujuan secara paralel (pyosmium lepas GIL).
+_PARALLEL_LOCAL = os.environ.get("HIER_PARALLEL_LOCAL", "1") == "1"
 
 
 @dataclass
@@ -85,8 +87,22 @@ def build_hierarchical(lat1: float, lon1: float,
     base = load_base_graph()
     base_ids = set(base.graph)
     warnings: list = []
-    local_a, portal_a, fb_a = _local_with_portal(lat1, lon1, base_ids, warnings)
-    local_b, portal_b, fb_b = _local_with_portal(lat2, lon2, base_ids, warnings)
+    endpoints = [(lat1, lon1), (lat2, lon2)]
+
+    def _build(lat, lon):
+        return _local_with_portal(lat, lon, base_ids, warnings)
+
+    results = []
+    if len(endpoints) > 1 and _PARALLEL_LOCAL:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            futs = [ex.submit(_build, lat, lon) for lat, lon in endpoints]
+            results = [f.result() for f in futs]
+    else:
+        results = [_build(lat, lon) for lat, lon in endpoints]
+
+    local_a, portal_a, fb_a = results[0]
+    local_b, portal_b, fb_b = results[1]
     return HierarchicalResult(
         origin=(lat1, lon1),
         dest=(lat2, lon2),
