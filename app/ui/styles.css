@@ -37,5 +37,20 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #e3e8ed; font-size: 13px; }
 .row b { text-align: right; font-weight: 600; }
 #result { min-height: 60px; }
+.toggle-row { display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer; margin-bottom: 8px; }
+.toggle-switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
+.toggle-switch input { display: none; }
+.toggle-switch .slider { position: absolute; inset: 0; background: #c9d2da; border-radius: 999px; transition: background .2s; }
+.toggle-switch .slider::before { content: ''; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s; }
+.toggle-switch input:checked + .slider { background: #0f6dc1; }
+.toggle-switch input:checked + .slider::before { transform: translateX(18px); }
+.traffic-ind { font-size: 12px; color: #5b6b7b; padding: 6px 0; font-weight: 600; }
+.traffic-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: #5b6b7b; }
+.lg { width: 14px; height: 5px; border-radius: 2px; display: inline-block; }
+.lg-green { background: #2e9e4f; }
+.lg-yellow { background: #f4c20d; }
+.lg-orange { background: #f0741f; }
+.lg-red { background: #d81b1b; }
 #log { min-height: 40px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0d1b26; color: #7ff59b; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .leaflet-container { font: inherit; }
+.leaflet-popup-content { font-size: 13px; font-weight: 600; color: #1f2933; margin: 10px 14px; }

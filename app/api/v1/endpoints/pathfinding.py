@@ -11,7 +11,6 @@ from app.schemas.pathfinding import RouteRequest, RouteResponse
 from app.services.cache_service import (
     get_route,
     graph_scope,
-    load_penalties,
     route_key,
     set_route,
 )
@@ -37,6 +36,7 @@ from app.services.pathfinding.hierarchical import (
     build_hierarchical,
     route_hierarchical,
 )
+from app.services.traffic.smart_hybrid import get_request_penalties
 
 router = APIRouter()
 
@@ -158,21 +158,15 @@ async def _route_hierarchical(hier, redis, penalties,
     return response
 
 
-@router.post("/find-route", response_model=RouteResponse)
-async def find_route(payload: RouteRequest, request: Request):
-    lat1, lon1 = payload.origin.latitude, payload.origin.longitude
-    lat2, lon2 = payload.destination.latitude, payload.destination.longitude
-    try:
-        plan = await run_in_threadpool(
-            _resolve_plan, request.app, lat1, lon1, lat2, lon2)
-    except AreaNotCoveredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
+async def _compute_route(app, plan, redis, penalties,
+                         lat1: float, lon1: float,
+                         lat2: float, lon2: float) -> RouteResponse | None:
+    """Hitung rute sesuai plan dengan penalties tertentu.
 
-    redis = getattr(request.app.state, "redis", None)
-    penalties = await load_penalties(redis)
-
+    Menangani plan hierarchical (dengan fallback graf tanpa gang bila
+    hierarchical gagal 400) dan plan graf (dengan cadangan hierarchical bila
+    graf lokal terputus). Kembalikan None bila rute tidak ditemukan.
+    """
     if plan[0] == "hierarchical":
         try:
             response = await _route_hierarchical(
@@ -183,14 +177,11 @@ async def find_route(payload: RouteRequest, request: Request):
             logger.info(
                 "Hierarchical gagal (%s), fallback ke graf tanpa gang.",
                 e.detail)
-            fb = _resolve_fallback_graph(
-                request.app, lat1, lon1, lat2, lon2)
+            fb = _resolve_fallback_graph(app, lat1, lon1, lat2, lon2)
             if fb is None:
                 raise
             plan = fb
         else:
-            if response is None:
-                raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
             return response
 
     pg = plan[1]
@@ -236,7 +227,7 @@ async def find_route(payload: RouteRequest, request: Request):
                 hier, redis, penalties, lat1, lon1, lat2, lon2)
             if response is not None:
                 return response
-        raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+        return None
 
     route_coords = [pg.locations[node_id] for node_id in node_path]
 
@@ -260,4 +251,57 @@ async def find_route(payload: RouteRequest, request: Request):
         graph_radius_meters=pg.radius,
     )
     await set_route(redis, key, response.model_dump())
+    return response
+
+
+@router.post("/find-route", response_model=RouteResponse)
+async def find_route(payload: RouteRequest, request: Request):
+    lat1, lon1 = payload.origin.latitude, payload.origin.longitude
+    lat2, lon2 = payload.destination.latitude, payload.destination.longitude
+    try:
+        plan = await run_in_threadpool(
+            _resolve_plan, request.app, lat1, lon1, lat2, lon2)
+    except AreaNotCoveredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
+
+    redis = getattr(request.app.state, "redis", None)
+    penalties = await get_request_penalties(
+        request.app, redis, (lat1, lon1), (lat2, lon2))
+
+    response = await _compute_route(
+        request.app, plan, redis, penalties, lat1, lon1, lat2, lon2)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+
+    # Bounded corridor sampling: probe TomTom di sepanjang corridor rute
+    # awal; bila macet (ratio > 1.5), update bobot edge di RAM dan re-route
+    # sekali untuk rute paling cepat.
+    from app.services.traffic.provider import provider_mode, traffic_enabled
+    final_penalties = penalties
+    if traffic_enabled() and provider_mode() == "smart_hybrid":
+        from app.services.traffic.smart_hybrid import probe_corridor
+        corridor = await probe_corridor(
+            request.app, redis, response.route_coordinates)
+        if corridor["congested"]:
+            merged = dict(penalties)
+            merged.update(corridor["penalties"])
+            logger.info(
+                "[TRAFFIC] Corridor macet (%d edge), re-route instan.",
+                len(corridor["penalties"]))
+            rerouted = await _compute_route(
+                request.app, plan, redis, merged, lat1, lon1, lat2, lon2)
+            if rerouted is not None:
+                response = rerouted
+                final_penalties = merged
+
+    # Estimasi waktu tempuh (ETA), dipengaruhi traffic (penalty multiplier).
+    from app.services.traffic.eta import compute_eta, estimated_arrival
+    from app.services.traffic.poller import _reference_graph
+    eta_graph, eta_locations = _reference_graph(request.app)
+    response.estimated_time_seconds = compute_eta(
+        eta_graph, eta_locations, response.route_coordinates, final_penalties)
+    response.estimated_arrival = estimated_arrival(
+        response.estimated_time_seconds)
     return response

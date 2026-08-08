@@ -48,3 +48,96 @@ async def list_penalties(request: Request):
         PenaltyEntry(edge_id=edge_id, multiplier=multiplier)
         for edge_id, multiplier in sorted(penalties.items())
     ])
+
+
+class ProviderStatus(BaseModel):
+    name: str
+    active: bool
+
+
+class TrafficStatusResponse(BaseModel):
+    enabled: bool
+    mode: str
+    poller_running: bool
+    providers: list[ProviderStatus]
+    penalty_count: int
+
+
+@router.get("/status", response_model=TrafficStatusResponse)
+async def traffic_status(request: Request):
+    from app.services.traffic.poller import (
+        should_start_poller,
+        traffic_poller_running,
+    )
+    from app.services.traffic.provider import get_providers, provider_mode
+
+    redis = getattr(request.app.state, "redis", None)
+    penalties = await load_penalties(redis)
+    providers = get_providers()
+    od_penalties = {}
+    if provider_mode() == "smart_hybrid":
+        from app.services.traffic.smart_hybrid import load_cached_penalties
+        od_penalties = await load_cached_penalties(redis)
+    return TrafficStatusResponse(
+        enabled=should_start_poller(),
+        mode=provider_mode(),
+        poller_running=traffic_poller_running(request.app),
+        providers=[
+            ProviderStatus(name=p.name, active=_provider_active(p))
+            for p in providers
+        ],
+        penalty_count=len(penalties) + len(od_penalties),
+    )
+
+
+def _provider_active(provider) -> bool:
+    for attr in ("api_key", "url"):
+        if hasattr(provider, attr):
+            return bool(getattr(provider, attr))
+    return getattr(provider, "active", True)
+
+
+class MapSegment(BaseModel):
+    edge_id: int
+    multiplier: float
+    closure: bool
+    coordinates: list[list[float]]
+
+
+class TrafficMapResponse(BaseModel):
+    segments: list[MapSegment]
+    source: str | None = None
+
+
+@router.get("/map", response_model=TrafficMapResponse)
+async def traffic_map(request: Request):
+    from app.services.traffic.matcher import penalized_segments
+    from app.services.traffic.poller import _reference_graph
+    from app.services.traffic.provider import provider_mode
+    from app.services.traffic.smart_hybrid import load_cached_penalties
+
+    redis = getattr(request.app.state, "redis", None)
+    penalties = await load_penalties(redis)
+    if provider_mode() == "smart_hybrid":
+        merged = dict(penalties)
+        merged.update(await load_cached_penalties(redis))
+        penalties = merged
+    graph, locations = _reference_graph(request.app)
+    if not penalties or graph is None or locations is None:
+        return TrafficMapResponse(segments=[])
+
+    raw = penalized_segments(graph, locations, penalties)
+    segments = [
+        MapSegment(
+            edge_id=seg["edge_id"],
+            multiplier=seg["multiplier"],
+            closure=seg["closure"],
+            coordinates=seg["coordinates"],
+        )
+        for seg in raw
+    ]
+    source = getattr(
+        getattr(request.app.state, "region_graph", None) or
+        getattr(request.app.state, "path_graph", None),
+        "source", None)
+    return TrafficMapResponse(segments=segments, source=source)

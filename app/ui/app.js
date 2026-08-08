@@ -7,6 +7,11 @@
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
 
+  var trafficPane = map.createPane('traffic');
+  trafficPane.style.zIndex = 430;
+  var routePane = map.createPane('route');
+  routePane.style.zIndex = 460;
+
   var icons = {
     origin: L.divIcon({ html: '<div style="background:#1e7e34;border:2px solid #fff;border-radius:50%;width:16px;height:16px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>', className: '', iconSize: [16, 16] }),
     dest:   L.divIcon({ html: '<div style="background:#b3372f;border:2px solid #fff;border-radius:50%;width:16px;height:16px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>', className: '', iconSize: [16, 16] }),
@@ -17,6 +22,8 @@
   var originMarker = null, destMarker = null;
   var routeLayer = null, trackLayer = null, liveMarker = null;
   var watchId = null;
+  var trafficLayer = null, trafficTimer = null;
+  var trafficEnabledServer = false;
 
   function $(id) { return document.getElementById(id); }
   function log(msg) {
@@ -127,12 +134,92 @@
     placePoint(mode(), e.latlng);
   });
 
+  function formatEta(secs) {
+    secs = Math.round(secs);
+    if (secs >= 86400) {
+      var d = Math.floor(secs / 86400), h = Math.floor((secs % 86400) / 3600);
+      return d + ' hari' + (h ? ' ' + h + ' jam' : '');
+    }
+    if (secs >= 3600) {
+      var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+      return h + ' jam ' + m + ' mnt';
+    }
+    if (secs >= 60) {
+      var m = Math.floor(secs / 60), s = secs % 60;
+      return m + ' mnt ' + s + ' dtk';
+    }
+    return secs + ' dtk';
+  }
+
   function drawRoute(payload) {
     routeLayer = L.polyline(payload.route_coordinates.map(function (p) { return [p[0], p[1]]; }), {
-      color: '#0f6dc1', weight: 5, opacity: 0.85
+      color: '#0f6dc1', weight: 5, opacity: 0.85, pane: 'route'
     }).addTo(map);
     map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+    if (payload.estimated_time_seconds != null) {
+      routeLayer.bindPopup('Estimasi waktu: ' + formatEta(payload.estimated_time_seconds));
+      var mid = payload.route_coordinates[Math.floor(payload.route_coordinates.length / 2)];
+      if (mid) routeLayer.openPopup(mid);
+    }
   }
+
+  function trafficColor(multiplier, closure) {
+    if (closure || multiplier >= 4) return '#d81b1b';
+    if (multiplier >= 2.5) return '#f0741f';
+    if (multiplier >= 1.4) return '#f4c20d';
+    return '#2e9e4f';
+  }
+
+  function drawTraffic(segments) {
+    if (trafficLayer) map.removeLayer(trafficLayer);
+    trafficLayer = L.layerGroup().addTo(map);
+    if (!segments || !segments.length) {
+      log('Traffic: tidak ada segmen macet saat ini.');
+      return;
+    }
+    segments.forEach(function (seg) {
+      var pts = seg.coordinates.map(function (p) { return [p[0], p[1]]; });
+      var closed = seg.closure || seg.multiplier >= 4;
+      L.polyline(pts, {
+        color: trafficColor(seg.multiplier, seg.closure),
+        weight: closed ? 6 : 4,
+        opacity: 0.9,
+        dashArray: closed ? '8 6' : null,
+        pane: 'traffic'
+      }).addTo(trafficLayer);
+    });
+  }
+
+  async function refreshTraffic() {
+    try {
+      var resp = await fetch('/api/v1/traffic/map');
+      var data = await parseJson(resp);
+      if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
+      drawTraffic(data.segments);
+      $('traffic-ind').textContent = 'Traffic: aktif · ' + data.segments.length + ' segmen' +
+        (trafficEnabledServer ? '' : ' (server nonaktif)');
+    } catch (err) {
+      $('traffic-ind').textContent = 'Traffic: error (' + (err.message || 'gagal') + ')';
+      log('ERROR traffic: ' + (err.message || err));
+    }
+  }
+
+  function clearTraffic() {
+    if (trafficTimer) { clearInterval(trafficTimer); trafficTimer = null; }
+    if (trafficLayer) { map.removeLayer(trafficLayer); trafficLayer = null; }
+  }
+
+  $('chk-traffic').addEventListener('change', function () {
+    if (this.checked) {
+      refreshTraffic();
+      trafficTimer = setInterval(refreshTraffic, 30000);
+    } else {
+      clearTraffic();
+      $('traffic-ind').textContent = trafficEnabledServer
+        ? 'Traffic: server aktif (tampilan mati)'
+        : 'Traffic: nonaktif';
+    }
+  });
 
   function renderRouteResult(data) {
     $('r-status').textContent = data.status || '-';
@@ -248,6 +335,8 @@
   $('btn-reset').addEventListener('click', function () {
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; $('btn-track').textContent = 'Mulai Lacak Posisi'; }
     hideLoading();
+    clearTraffic();
+    $('chk-traffic').checked = false;
     origin = null; dest = null;
     [originMarker, destMarker, liveMarker].forEach(function (m) { if (m) map.removeLayer(m); });
     originMarker = destMarker = liveMarker = null;
@@ -291,6 +380,25 @@
       log('ERROR server: ' + err.message);
     } finally {
       hideLoading();
+    }
+    checkTrafficStatus();
+  }
+
+  async function checkTrafficStatus() {
+    try {
+      var resp = await fetch('/api/v1/traffic/status');
+      var data = await parseJson(resp);
+      if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
+      trafficEnabledServer = !!data.enabled;
+      var ind = $('traffic-ind');
+      if (data.enabled) {
+        ind.textContent = 'Traffic: server aktif · ' + data.penalty_count + ' segmen';
+      } else {
+        ind.textContent = 'Traffic: server nonaktif';
+      }
+      if (data.poller_running) log('INFO traffic: poller real-time berjalan.');
+    } catch (err) {
+      $('traffic-ind').textContent = 'Traffic: server tak terjangkau';
     }
   }
 

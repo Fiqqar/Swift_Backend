@@ -246,6 +246,16 @@ async def lifespan(app: FastAPI):
         logging.getLogger("app").warning(
             "Redis tidak tersedia, cache rute dinonaktifkan: %s", exc)
 
+    traffic_task = None
+    if redis_client is not None:
+        from app.services.traffic.poller import (
+            should_start_poller,
+            traffic_poller,
+        )
+        if should_start_poller():
+            traffic_task = asyncio.create_task(traffic_poller(app, redis_client))
+            app.state.traffic_task = traffic_task
+
     try:
         yield
     finally:
@@ -259,6 +269,8 @@ async def lifespan(app: FastAPI):
             region_task.cancel()
         if base_task is not None:
             base_task.cancel()
+        if traffic_task is not None:
+            traffic_task.cancel()
         await close_redis(redis_client)
         try:
             await dispose_db()

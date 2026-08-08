@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 from typing import List, Tuple
 
@@ -16,3 +18,5 @@ class RouteResponse(BaseModel):
     source: str = "demo"
     warning: str | None = None
     graph_radius_meters: int | None = None
+    estimated_time_seconds: float | None = None
+    estimated_arrival: datetime | None = None
