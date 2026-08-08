@@ -15,7 +15,10 @@ from app.services.cache_service import (
     route_key,
     set_route,
 )
-from app.services.pathfinding.core_a_star import haversine_distance
+from app.services.pathfinding.core_a_star import (
+    _snap_endpoint,
+    haversine_distance,
+)
 from app.services.pathfinding.core_engine import route as engine_route
 from app.services.pathfinding.graph_loader import (
     AreaNotCoveredError,
@@ -236,6 +239,17 @@ async def find_route(payload: RouteRequest, request: Request):
         raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
 
     route_coords = [pg.locations[node_id] for node_id in node_path]
+
+    # Presisi ujung: proyeksikan origin & destination ke ruas jalan terdekat
+    # (bukan hanya node terdekat) agar koordinat akhir menempel pada jalan.
+    start_proj = await run_in_threadpool(
+        _snap_endpoint, pg.graph, pg.locations, lat1, lon1, start_node)
+    goal_proj = await run_in_threadpool(
+        _snap_endpoint, pg.graph, pg.locations, lat2, lon2, goal_node)
+    route_coords[0] = start_proj
+    route_coords[-1] = goal_proj
+    total_distance += haversine_distance((lat1, lon1), start_proj)
+    total_distance += haversine_distance((lat2, lon2), goal_proj)
 
     response = RouteResponse(
         status="success",

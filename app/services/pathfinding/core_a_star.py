@@ -13,6 +13,47 @@ def haversine_distance(coord1: tuple, coord2: tuple) -> float:
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
+def _closest_point_on_segment(p: tuple, a: tuple, b: tuple) -> tuple:
+    """Proyeksi titik p ke segmen a-b (lat, lon). Kembalikan (lat, lon).
+
+    Menggunakan proyeksi equirectangular lokal agar fraksi dihitung secara
+    proporsional terhadap jarak meter (bukan derajat mentah).
+    """
+    coslat = math.cos(math.radians((a[0] + b[0]) / 2.0))
+    ax, ay = a[1] * coslat, a[0]
+    bx, by = b[1] * coslat, b[0]
+    px, py = p[1] * coslat, p[0]
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 == 0:
+        return a
+    t = ((px - ax) * dx + (py - ay) * dy) / seg2
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    cx = ax + t * dx
+    cy = ay + t * dy
+    return (cy, cx / coslat)
+
+
+def _snap_endpoint(graph: dict, locations: dict, lat: float, lon: float,
+                   node_id: int) -> tuple:
+    """Proyeksikan titik ke segmen jalan terdekat yang bersisian dgn node_id.
+
+    Titik tujuan diletakkan di atas ruas jalan (bukan hanya node terdekat)
+    agar koordinat akhir presisi. Fallback ke posisi node bila tak ada
+    tetangga. Kembalikan (lat, lon).
+    """
+    best = locations[node_id]
+    best_d = haversine_distance((lat, lon), best)
+    for nbr in graph.get(node_id, {}):
+        proj = _closest_point_on_segment(
+            (lat, lon), locations[node_id], locations[nbr])
+        d = haversine_distance((lat, lon), proj)
+        if d < best_d:
+            best_d = d
+            best = proj
+    return best
+
+
 def edge_id(u: int, v: int) -> int:
     """ID edge numerik deterministik dari pasangan node (Cantor pairing)."""
     a = u if u >= 0 else 2 * (-u) - 1

@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from app.services.pathfinding.core_a_star import (
+    _snap_endpoint,
     edge_id,
     haversine_distance,
 )
@@ -295,13 +296,13 @@ def route_hierarchical(result: HierarchicalResult,
     # --- Rekonstruksi path lokal -----------------------------------------
     if local_a:
         path_a = _reconstruct(parent_a, start_a, pa)
-        coords_a = [result.local_origin.locations[n] for n in path_a]
+        coords_a = [result.local_origin.locations[n] for n in path_a] # type: ignore
     else:
         path_a = [pa]
         coords_a = [base_locations[pa]]
     if local_b:
         path_b = _reconstruct_rev(parent_b, pb, goal_b)
-        coords_b = [result.local_dest.locations[n] for n in path_b[1:]]
+        coords_b = [result.local_dest.locations[n] for n in path_b[1:]] # type: ignore
     else:
         path_b = [pb]
         coords_b = []
@@ -313,6 +314,22 @@ def route_hierarchical(result: HierarchicalResult,
     coords.extend(coords_b)
 
     total = dist_a[pa] + cost_mid + dist_b[pb]
+
+    # Presisi ujung: proyeksikan origin & destination ke ruas jalan terdekat
+    # (bukan hanya node terdekat) agar koordinat akhir menempel pada jalan.
+    origin_graph = result.local_origin.graph if local_a else base.graph
+    origin_locs = result.local_origin.locations if local_a else base_locations
+    dest_graph = result.local_dest.graph if local_b else base.graph
+    dest_locs = result.local_dest.locations if local_b else base_locations
+    if coords:
+        origin_proj = _snap_endpoint(
+            origin_graph, origin_locs, origin[0], origin[1], start_a)
+        dest_proj = _snap_endpoint(
+            dest_graph, dest_locs, dest[0], dest[1], goal_b)
+        coords[0] = origin_proj
+        coords[-1] = dest_proj
+        total += haversine_distance(origin, origin_proj)
+        total += haversine_distance(dest, dest_proj)
 
     warning = result.warning
     if warnings:

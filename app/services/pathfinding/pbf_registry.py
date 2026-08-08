@@ -67,11 +67,11 @@ def pbf_dir() -> str:
 
 def _read_header_box(path: str) -> tuple | None:
     """Baca bbox (minlon, minlat, maxlon, maxlat) dari header file PBF."""
-    import osmium
-    from osmium import io
+    from osmium import apply as osmium_apply
+    from osmium import io as osmium_io
 
     try:
-        reader = io.Reader(path)
+        reader = osmium_io.Reader(path)
         try:
             box = reader.header().box()
         finally:
@@ -87,6 +87,7 @@ def _read_header_box(path: str) -> tuple | None:
 def _scan_bbox(path: str) -> tuple | None:
     """Fallback: hitung bbox dengan memindai seluruh node (lambat)."""
     import osmium
+    from osmium import io as osmium_io
 
     class _MinMax(osmium.SimpleHandler):
         def __init__(self):
@@ -105,7 +106,7 @@ def _scan_bbox(path: str) -> tuple | None:
 
     try:
         handler = _MinMax()
-        osmium.apply(osmium.io.Reader(path), handler)
+        osmium.apply(osmium_io.Reader(path), handler)
         return (handler.minlon, handler.minlat, handler.maxlon, handler.maxlat)
     except Exception as exc:
         logger.warning("Gagal memindai bbox PBF %s: %s", path, exc)
@@ -180,13 +181,6 @@ def refresh_registry() -> list:
 
 def select_pbf(lat1: float, lon1: float,
                lat2: float, lon2: float) -> PbfEntry | None:
-    """Pilih PBF yang paling sesuai untuk area (origin+dest).
-
-    Bounding box antar pulau sering saling tumpang tindih (bbox persegi
-    mencakup lautan di sekitarnya), sehingga 'area terkecil' saja tidak cukup.
-    Skor: margin kedalaman titik ke tepi bbox (paling dalam = paling yakin),
-    lalu jarak titik tengah ke pusat bbox sebagai tie-break.
-    """
     mid_lat = (lat1 + lat2) / 2.0
     mid_lon = (lon1 + lon2) / 2.0
     best = None
@@ -204,7 +198,7 @@ def select_pbf(lat1: float, lon1: float,
             (mid_lat - (entry.minlat + entry.maxlat) / 2.0) ** 2
             + (mid_lon - (entry.minlon + entry.maxlon) / 2.0) ** 2)
         score = (margin, -d, -entry.area_deg2)
-        if best is None or score > best_score:
+        if best_score is None or score > best_score:
             best = entry
             best_score = score
     return best

@@ -424,14 +424,6 @@ def load_graph_from_pbf(pbf_path: str,
                         bbox: tuple | None = None,
                         highway_filter: set | None = None,
                         two_pass: bool = True):
-    """Baca network dari file .osm.pbf via osmium (pyosmium).
-
-    bbox: (minlon, minlat, maxlon, maxlat) untuk memotong area saat baca.
-    highway_filter: set tipe jalan yang diizinkan; None = semua _DRIVE_HIGHWAYS.
-    two_pass: True = baca file 2x (kumpulkan ref node jalan dulu, hemat memori
-    untuk PBF besar). False = baca 1x; dipakai untuk tile (file kecil yang
-    hanya berisi node jalan) agar waktu baca kira-kira setengahnya.
-    """
     import osmium
 
     allowed = _DRIVE_HIGHWAYS if highway_filter is None else highway_filter
@@ -770,9 +762,6 @@ def _tile_tag(level: int) -> str:
 
 
 def _scan_tiles(tiles: list, bbox: tuple, level: int = 1):
-    """Baca graf jalan dari tile. Paralel bila _TILE_WORKERS > 1 (berguna
-    untuk bind-mount lambat seperti Docker Desktop; host/fast-I/O lebih
-    cepat sekuensial karena parsing CPU-bound)."""
     kwargs = dict(bbox=bbox, highway_filter=_LEVEL_HIGHWAYS[level],
                   two_pass=False)
     if _TILE_WORKERS > 1 and len(tiles) > 1:
