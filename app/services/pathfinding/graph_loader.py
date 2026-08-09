@@ -7,7 +7,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 
-from app.services.pathfinding.core_a_star import haversine_distance
+from app.services.pathfinding.core_a_star import (
+    edge_id,
+    haversine_distance,
+)
 from app.services.pathfinding.preprocess import (
     PathGraph,
     build_path_graph,
@@ -70,7 +73,24 @@ _DRIVE_HIGHWAYS = {
     "tertiary", "tertiary_link", "unclassified", "residential",
     "service", "living_street", "road",
 }
-_PG_VERSION = 3
+
+# Tag access yang TIDAK boleh membuang jalan saat parsing (docs/feature/
+# verhicle_transport.md): akses terbatas tetapi tetap bisa dilalui kendaraan.
+_ACCESS_KEEP = {"destination", "permissive", "residential", "yes", "customers"}
+
+
+def _way_kept(tags: dict) -> bool:
+    """Kebijakan access parsing way OSM (permissive / keep-all).
+
+    Semua jalan kendaraan tetap disertakan — termasuk `access=destination`,
+    `access=permissive`, `access=residential`, dan `living_street` — karena
+    jalan akses terbatas di kompleks tetap dibutuhkan agar destinasi di
+    dalamnya terjangkau. Pulau yang terpisah ditangani oleh fallback
+    snapping (connectivity.py), bukan dengan membuang edge di sini.
+    """
+    return True
+
+_PG_VERSION = 4
 
 _LEVEL_DIST_KM_1 = 4.0
 _LEVEL_DIST_KM_2 = 100.0
@@ -204,6 +224,7 @@ def _pbf_load_plan(lat: float, lon: float, dist_meters: int,
 
 _GRAPH_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _LOCATIONS_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
+_EDGE_CLASSES_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _SOURCE_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _WARNING_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _PG_CACHE = _LRUDict(_PG_CACHE_SIZE)
@@ -347,7 +368,8 @@ def load_osm_graph_by_point(lat: float, lon: float,
         if key in _GRAPH_CACHE:
             _perf("Disk Cache Check", t_cache)
             return (_GRAPH_CACHE[key], _LOCATIONS_CACHE[key],
-                    _SOURCE_CACHE[key], _WARNING_CACHE[key])
+                    _EDGE_CLASSES_CACHE[key], _SOURCE_CACHE[key],
+                    _WARNING_CACHE[key])
 
     path = _disk_path(key)
     if os.path.exists(path):
@@ -357,26 +379,30 @@ def load_osm_graph_by_point(lat: float, lon: float,
             with _CACHE_LOCK:
                 _GRAPH_CACHE[key] = data["graph"]
                 _LOCATIONS_CACHE[key] = data["locations"]
+                _EDGE_CLASSES_CACHE[key] = data.get("edge_classes") or {}
                 _SOURCE_CACHE[key] = data["source"]
                 _WARNING_CACHE[key] = data["warning"]
             _perf("Disk Cache Check", t_cache)
             return (data["graph"], data["locations"],
-                    data["source"], data["warning"])
+                    data.get("edge_classes") or {}, data["source"],
+                    data["warning"])
         except Exception as exc:
             logger.warning("Cache disk tidak terbaca: %s", exc)
 
     _perf("Disk Cache Check", t_cache)
-    graph, locations, source, warning = _load_raw(
+    graph, locations, edge_classes, source, warning = _load_raw(
         lat, lon, dist_meters, origin, dest, level, rect, pbf)
 
     with _CACHE_LOCK:
         _GRAPH_CACHE[key] = graph
         _LOCATIONS_CACHE[key] = locations
+        _EDGE_CLASSES_CACHE[key] = edge_classes
         _SOURCE_CACHE[key] = source
         _WARNING_CACHE[key] = warning
     _save_disk(path, {"graph": graph, "locations": locations,
-                      "source": source, "warning": warning})
-    return graph, locations, source, warning
+                      "edge_classes": edge_classes, "source": source,
+                      "warning": warning})
+    return graph, locations, edge_classes, source, warning
 
 
 def _overpass_reachable(url: str, timeout: float = _PROBE_TIMEOUT) -> bool:
@@ -440,6 +466,8 @@ def load_graph_from_pbf(pbf_path: str,
                     return
                 if tags.get("area") == "yes":
                     return
+                if not _way_kept(tags):
+                    return
                 for nd in w.nodes:
                     self.needed.add(nd.ref)
 
@@ -477,6 +505,8 @@ def load_graph_from_pbf(pbf_path: str,
                 return
             if tags.get("area") == "yes":
                 return
+            if not _way_kept(tags):
+                return
             self.ways.append(([nd.ref for nd in w.nodes], tags))
 
     handler = _RoadNetHandler(bbox, needed)
@@ -485,10 +515,12 @@ def load_graph_from_pbf(pbf_path: str,
     reader.close()
 
     graph = {}
+    edge_classes = {}
     for refs, tags in handler.ways:
         oneway = str(tags.get("oneway", "")).strip().lower()
         reversed_edge = oneway == "-1"
         one_way = oneway in ("yes", "true", "1", "-1")
+        highway_class = tags.get("highway", "")
         for i in range(len(refs) - 1):
             a, b = refs[i], refs[i + 1]
             if a == b or a not in handler.nodes or b not in handler.nodes:
@@ -501,13 +533,17 @@ def load_graph_from_pbf(pbf_path: str,
             graph[a][b] = length
             if not one_way:
                 graph[b][a] = length
+            if highway_class:
+                edge_classes[edge_id(a, b)] = highway_class
+                if not one_way:
+                    edge_classes[edge_id(b, a)] = highway_class
 
     node_ids = set(graph)
     for neighbors in graph.values():
         node_ids.update(neighbors)
     locations = {nid: handler.nodes[nid]
                  for nid in node_ids if nid in handler.nodes}
-    return graph, locations
+    return graph, locations, edge_classes
 
 
 def _load_raw(lat: float, lon: float, dist_meters: int,
@@ -523,11 +559,12 @@ def _load_raw(lat: float, lon: float, dist_meters: int,
         try:
             bbox = rect if rect is not None else _pbf_bbox(lat, lon, dist_meters)
             t_pbf = perf_counter()
-            graph, locations = load_graph_from_pbf(
+            graph, locations, edge_classes = load_graph_from_pbf(
                 pbf.path, bbox, _LEVEL_HIGHWAYS[level])
             _perf("PBF Parse (Cold Start)", t_pbf)
             if graph and locations:
-                return graph, locations, f"pbf:{pbf.stem}", None
+                return (graph, locations, edge_classes,
+                        f"pbf:{pbf.stem}", None)
             raise AreaNotCoveredError(
                 f"PBF {pbf.basename} tidak memiliki data jalan "
                 "di area yang diminta")
@@ -547,16 +584,17 @@ def _load_raw(lat: float, lon: float, dist_meters: int,
             warning = "Server OSM (Overpass) tidak terjangkau - cek koneksi internet"
         else:
             try:
-                graph, locations = _load_osm_graph(ox, lat, lon, dist_meters)
-                return graph, locations, "osm", None
+                graph, locations, edge_classes = _load_osm_graph(
+                    ox, lat, lon, dist_meters)
+                return graph, locations, edge_classes, "osm", None
             except Exception as exc:
                 warning = _friendly_osm_error(exc)
     else:
         warning = import_warning or "osmnx tidak terpasang di lingkungan ini"
 
-    graph, locations = _build_demo_grid(lat, lon, dist_meters)
+    graph, locations, edge_classes = _build_demo_grid(lat, lon, dist_meters)
     warnings = [w for w in (warning, ) if w]
-    return graph, locations, "demo", "; ".join(warnings)
+    return graph, locations, edge_classes, "demo", "; ".join(warnings)
 
 
 def load_path_graph(lat: float, lon: float, dist_meters: int = 3000,
@@ -589,11 +627,12 @@ def load_path_graph(lat: float, lon: float, dist_meters: int = 3000,
         except Exception as exc:
             logger.warning("Cache PathGraph tidak terbaca: %s", exc)
 
-    graph, locations, source, warning = load_osm_graph_by_point(
+    graph, locations, edge_classes, source, warning = load_osm_graph_by_point(
         lat, lon, dist_meters, origin, dest, pbf, level=level)
     enable_ch = _ENABLE_CH if use_ch is None else use_ch
     t_build = perf_counter()
-    pg = build_path_graph(graph, locations, lat, lon, enable_ch=enable_ch)
+    pg = build_path_graph(graph, locations, lat, lon, enable_ch=enable_ch,
+                          edge_classes=edge_classes)
     _perf("PathGraph Build", t_build)
     pg.radius = int(dist_meters)
     pg.source = source
@@ -773,10 +812,12 @@ def _scan_tiles(tiles: list, bbox: tuple, level: int = 1):
         results = [load_graph_from_pbf(p, **kwargs) for p in tiles]
     graph = {}
     locations = {}
-    for g, loc in results:
+    edge_classes = {}
+    for g, loc, ec in results:
         graph.update(g)
         locations.update(loc)
-    return graph, locations
+        edge_classes.update(ec)
+    return graph, locations, edge_classes
 
 
 def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
@@ -788,14 +829,14 @@ def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
             "scripts/split_tiles.py terlebih dahulu.")
     box = _pbf_bbox(lat, lon, radius)
     t_tile = perf_counter()
-    graph, locations = _scan_tiles(tiles, box, level)
+    graph, locations, edge_classes = _scan_tiles(tiles, box, level)
     _perf("Tile Scan", t_tile)
     if not graph:
         raise AreaNotCoveredError(
             "Tidak ada data jalan di tile sekitar titik yang diminta.")
     m = _tiles_manifest()
     stem = m["stem"] if m else "tile"
-    return graph, locations, f"tile:{stem}:l{level}", None
+    return graph, locations, edge_classes, f"tile:{stem}:l{level}", None
 
 
 def load_local_graph_point(lat: float, lon: float,
@@ -826,9 +867,11 @@ def load_local_graph_point(lat: float, lon: float,
         except Exception as exc:
             logger.warning("Cache PathGraph lokal tidak terbaca: %s", exc)
 
-    graph, locations, source, warning = _load_local_raw(lat, lon, radius, level)
+    graph, locations, edge_classes, source, warning = _load_local_raw(
+        lat, lon, radius, level)
     t_build = perf_counter()
-    pg = build_path_graph(graph, locations, lat, lon, enable_ch=_ENABLE_CH)
+    pg = build_path_graph(graph, locations, lat, lon, enable_ch=_ENABLE_CH,
+                          edge_classes=edge_classes)
     _perf("PathGraph Local Build", t_build)
     pg.radius = int(radius)
     pg.source = source
@@ -906,7 +949,7 @@ def load_local_graph_covering(lat1: float, lon1: float,
     graph = {}
     locations = {}
     t_tile = perf_counter()
-    graph, locations = _scan_tiles(tiles, load_rect, level)
+    graph, locations, edge_classes = _scan_tiles(tiles, load_rect, level)
     _perf("Tile Scan (cover)", t_tile)
     if not graph:
         raise AreaNotCoveredError(
@@ -917,7 +960,8 @@ def load_local_graph_covering(lat1: float, lon1: float,
     # tidak diperlukan -> build cepat & pickle kecil. Fallback Python tetap
     # aman (shortest_path jatuh ke A* biasa bila landmark kosong).
     pg = build_path_graph(graph, locations, mid_lat, mid_lon,
-                          landmarks_k=0, enable_ch=False)
+                          landmarks_k=0, enable_ch=False,
+                          edge_classes=edge_classes)
     _perf("PathGraph Local Cover Build", t_build)
     pg.radius = int(radius)
     pg.source = "tile:%s:l%d:cover" % (m["stem"], level)
@@ -1011,12 +1055,25 @@ def load_base_graph() -> PathGraph:
         return pg
 
 
+_CUSTOM_DRIVE_FILTER = '["highway"~"^(%s)$"]["area"!~"yes"]' % (
+    "|".join(sorted(_DRIVE_HIGHWAYS)))
+
+
 def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):
     _configure_osmnx(ox, radius_timeout(dist_meters))
-    G = ox.graph_from_point((lat, lon), dist=dist_meters, network_type="drive")
+    # custom_filter menyertakan semua kelas jalan kendaraan TANPA filter access
+    # bawaan osmnx (yang bisa membuang access=destination/permissive/dll).
+    try:
+        G = ox.graph_from_point((lat, lon), dist=dist_meters,
+                                network_type=None,
+                                custom_filter=_CUSTOM_DRIVE_FILTER)
+    except (TypeError, ValueError):
+        G = ox.graph_from_point((lat, lon), dist=dist_meters,
+                                network_type="drive")
 
     locations = {node_id: (data['y'], data['x']) for node_id, data in G.nodes(data=True)}
     graph = {node_id: {} for node_id in G.nodes}
+    edge_classes = {}
 
     for u, v, data in G.edges(data=True):
         length = data.get('length', 1.0)
@@ -1025,13 +1082,22 @@ def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):
         if not data.get('oneway', False):
             graph[v][u] = length
 
-    return graph, locations
+        highway_class = data.get('highway')
+        if isinstance(highway_class, (list, tuple)):
+            highway_class = highway_class[0] if highway_class else ""
+        if highway_class:
+            edge_classes[edge_id(u, v)] = highway_class
+            if not data.get('oneway', False):
+                edge_classes[edge_id(v, u)] = highway_class
+
+    return graph, locations, edge_classes
 
 
 def _build_demo_grid(lat: float, lon: float, dist_meters: int,
                      rows: int = 6, cols: int = 6):
     locations = {}
     graph = {}
+    edge_classes = {}
 
     lat_span = dist_meters / 111320.0
     lon_span = dist_meters / (111320.0 * max(0.1, math.cos(math.radians(lat))))
@@ -1055,13 +1121,17 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
                 d = haversine_distance(locations[nid], locations[other])
                 graph[nid][other] = d
                 graph[other][nid] = d
+                edge_classes[edge_id(nid, other)] = "residential"
+                edge_classes[edge_id(other, nid)] = "residential"
             if r + 1 < rows:
                 other = node_id(r + 1, c)
                 d = haversine_distance(locations[nid], locations[other])
                 graph[nid][other] = d
                 graph[other][nid] = d
+                edge_classes[edge_id(nid, other)] = "residential"
+                edge_classes[edge_id(other, nid)] = "residential"
 
-    return graph, locations
+    return graph, locations, edge_classes
 
 
 _LOC_BUCKET = 1.0 / 1000.0  # 0.001 deg (~111 m) per sel index

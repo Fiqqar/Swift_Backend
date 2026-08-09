@@ -29,6 +29,7 @@ import osmium  # noqa: E402
 
 from app.services.pathfinding.graph_loader import (  # noqa: E402
     _DRIVE_HIGHWAYS,
+    _way_kept,
 )
 from app.services.pathfinding.pbf_registry import (  # noqa: E402
     discover_pbfs,
@@ -72,6 +73,8 @@ class _WayCollector(osmium.SimpleHandler):
         if tags.get("highway") not in _DRIVE_HIGHWAYS:
             return
         if tags.get("area") == "yes":
+            return
+        if not _way_kept(tags):
             return
         self.road_ways += 1
         for nd in w.nodes:
@@ -137,6 +140,8 @@ class _TileWriter(osmium.SimpleHandler):
         if tags.get("highway") not in _DRIVE_HIGHWAYS:
             return
         if tags.get("area") == "yes":
+            return
+        if not _way_kept(tags):
             return
         refs = []
         minlat = minlon = float("inf")

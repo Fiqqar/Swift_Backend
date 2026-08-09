@@ -34,6 +34,33 @@
     </section>
 
     <section>
+      <h2>Kendaraan</h2>
+      <div class="mode-row vehicle">
+        <label><input type="radio" name="vehicle" value="motorcycle"><span>Motorcycle</span></label>
+        <label><input type="radio" name="vehicle" value="car" checked><span>Car</span></label>
+        <label><input type="radio" name="vehicle" value="truck"><span>Truck</span></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Pengaturan Rute</h2>
+      <label class="toggle-row">
+        <span class="toggle-switch">
+          <input type="checkbox" id="chk-lastmile" checked>
+          <span class="slider"></span>
+        </span>
+        <span>Presisi ujung (last-mile)</span>
+      </label>
+      <label class="toggle-row">
+        <span class="toggle-switch">
+          <input type="checkbox" id="chk-reroute">
+          <span class="slider"></span>
+        </span>
+        <span>Rerouting dinamis (traffic)</span>
+      </label>
+    </section>
+
+    <section>
       <h2>Geolokasi Real-time</h2>
       <label style="font-size:12px; display:block; margin-bottom:6px;">
         <input type="checkbox" id="chk-autoroute"> Auto cari rute setelah ambil lokasi
@@ -48,8 +75,11 @@
         <div class="row"><span>Status</span><b id="r-status">-</b></div>
         <div class="row"><span>Jarak total</span><b id="r-dist">-</b></div>
         <div class="row"><span>Titik rute</span><b id="r-points">-</b></div>
+        <div class="row"><span>Estimasi waktu</span><b id="r-eta">-</b></div>
         <div class="row"><span>Area peta</span><b id="r-radius">-</b></div>
         <div class="row"><span>Sumber peta</span><b id="r-source">-</b></div>
+        <div class="row"><span>Segmen traffic</span><b id="r-traffic">-</b></div>
+        <div class="row"><span>Peringatan</span><b id="r-warning">-</b></div>
       </div>
       <button class="btn ghost" id="btn-reset" style="margin-top:8px;">Reset Peta</button>
     </section>
@@ -70,6 +100,7 @@
         <span class="lg lg-orange"></span><span>Padat</span>
         <span class="lg lg-red"></span><span>Tertutup</span>
       </div>
+      <div class="traffic-note">Garis rute (biru) akan terwarnai pada bagian yang kena traffic.</div>
     </section>
 
     <section>

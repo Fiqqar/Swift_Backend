@@ -20,8 +20,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from app.services.pathfinding.connectivity import nearest_node_reaching
 from app.services.pathfinding.core_a_star import (
-    _snap_endpoint,
     edge_id,
     haversine_distance,
 )
@@ -34,6 +34,7 @@ from app.services.pathfinding.graph_loader import (
     load_base_graph,
     load_local_graph_point,
 )
+from app.services.pathfinding.snap import log_snap, snap_point_to_graph
 
 logger = logging.getLogger("pathfinding")
 
@@ -148,6 +149,13 @@ def _reverse_graph(graph: dict) -> dict:
     return rev
 
 
+def _blocked_edges(penalties: dict | None) -> set:
+    """Edge yang diblokir penuh (penalty inf, mis. filter mode kendaraan)."""
+    if not penalties:
+        return set()
+    return {eid for eid, mult in penalties.items() if mult == float("inf")}
+
+
 def _reconstruct(parent: dict, start: int, goal: int) -> list:
     path = [goal]
     n = goal
@@ -192,11 +200,20 @@ def _best_pair(portal_a: list, portal_b: list, dist_a: dict, dist_b: dict,
 
 
 def route_hierarchical(result: HierarchicalResult,
-                       penalties: dict | None = None):
-    """Hitung rute 3 lapisan. Kembalikan (coords, total_dist, source, warning).
+                       penalties: dict | None = None,
+                       last_mile: bool = True):
+    """Hitung rute 3 lapisan.
+
+    Kembalikan (coords, total_dist, source, warning, node_sequence).
+    node_sequence = node id OSM per titik route_coordinates (sebelum proyeksi
+    ujung) untuk pemetaan traffic/edge.
 
     Bila graf lokal terpecah (portal ada di graf tapi tidak terjangkau dari
-    titik snap), ujung tsb di-degrade ke snap jalan utama (base) — bukan error.
+    titik snap), ujung tsb dicarikan node alternatif terdekat yang masih
+    terhubung ke portal; bila tidak ada, di-degrade ke snap jalan utama
+    (base) — bukan error.
+    Saat last_mile=False, ujung rute tetap pada node graf (tanpa proyeksi
+    tegak lurus ke pinggir segmen jalan).
     """
     base = result.base
     base_locations = base.locations
@@ -212,11 +229,19 @@ def route_hierarchical(result: HierarchicalResult,
             return None
         return nid
 
+    blocked_edges = _blocked_edges(penalties)
+
     # --- Snap origin & dest ----------------------------------------------
     start_a = _snap(result.local_origin.locations, origin[0], origin[1]) \
         if result.portal_origin else None
     goal_b = _snap(result.local_dest.locations, dest[0], dest[1]) \
         if result.portal_dest else None
+    log_snap(logger, "origin", origin[0], origin[1], start_a,
+             result.local_origin.locations, result.local_origin.graph,
+             result.local_origin.edge_classes)
+    log_snap(logger, "destination", dest[0], dest[1], goal_b,
+             result.local_dest.locations, result.local_dest.graph,
+             result.local_dest.edge_classes)
 
     # --- Dijkstra lokal origin & dest (paralel) ---------------------------
     def _dijk_a():
@@ -238,20 +263,50 @@ def route_hierarchical(result: HierarchicalResult,
     else:
         d_a, d_b = _dijk_a(), _dijk_b()
 
-    # --- Reachability portal; degrade ujung terpecah ke base --------------
+    # --- Reachability portal; fallback node alternatif, lalu degrade ke base -
     if start_a is not None:
         dist_a, parent_a = d_a
         cand_a = [pa for pa in result.portal_origin if pa in dist_a]
         if cand_a:
             portal_a, local_a = cand_a, True
         else:
-            start_a = _snap(base_locations, origin[0], origin[1])
-            if start_a is None:
-                raise AreaNotCoveredError("Origin tidak terhubung ke jalan utama")
-            dist_a, parent_a = {start_a: 0.0}, {}
-            portal_a, local_a = [start_a], False
-            warnings.append(
-                "Origin tak terjangkau jalan utama; memakai jalan utama terdekat")
+            alt, alt_dist = nearest_node_reaching(
+                result.local_origin.graph, result.local_origin.locations,
+                result.portal_origin, origin, blocked_edge_ids=blocked_edges,
+                max_dist=_MAX_SNAP_DIST)
+            if alt is not None:
+                start_a = alt
+                dist_a, parent_a = _dijkstra(
+                    result.local_origin.graph, start_a, penalties)
+                cand_a = [pa for pa in result.portal_origin if pa in dist_a]
+                if cand_a:
+                    portal_a, local_a = cand_a, True
+                    warnings.append(
+                        "Origin disesuaikan ke jalan terhubung "
+                        "(%.0f m dari titik)" % alt_dist)
+                    log_snap(logger, "origin(fallback)", origin[0], origin[1],
+                             start_a, result.local_origin.locations,
+                             result.local_origin.graph,
+                             result.local_origin.edge_classes)
+                else:
+                    start_a = _snap(base_locations, origin[0], origin[1])
+                    if start_a is None:
+                        raise AreaNotCoveredError(
+                            "Origin tidak terhubung ke jalan utama")
+                    dist_a, parent_a = {start_a: 0.0}, {}
+                    portal_a, local_a = [start_a], False
+                    warnings.append(
+                        "Origin tak terjangkau jalan utama; "
+                        "memakai jalan utama terdekat")
+            else:
+                start_a = _snap(base_locations, origin[0], origin[1])
+                if start_a is None:
+                    raise AreaNotCoveredError(
+                        "Origin tidak terhubung ke jalan utama")
+                dist_a, parent_a = {start_a: 0.0}, {}
+                portal_a, local_a = [start_a], False
+                warnings.append(
+                    "Origin tak terjangkau jalan utama; memakai jalan utama terdekat")
     else:
         start_a = _snap(base_locations, origin[0], origin[1])
         if start_a is None:
@@ -265,13 +320,43 @@ def route_hierarchical(result: HierarchicalResult,
         if cand_b:
             portal_b, local_b = cand_b, True
         else:
-            goal_b = _snap(base_locations, dest[0], dest[1])
-            if goal_b is None:
-                raise AreaNotCoveredError("Destinasi tidak terhubung ke jalan utama")
-            dist_b, parent_b = {goal_b: 0.0}, {}
-            portal_b, local_b = [goal_b], False
-            warnings.append(
-                "Destinasi tak terjangkau jalan utama; memakai jalan utama terdekat")
+            rev_local = _reverse_graph(result.local_dest.graph)
+            alt, alt_dist = nearest_node_reaching(
+                rev_local, result.local_dest.locations,
+                result.portal_dest, dest, blocked_edge_ids=blocked_edges,
+                max_dist=_MAX_SNAP_DIST)
+            if alt is not None:
+                goal_b = alt
+                dist_b, parent_b = _dijkstra(rev_local, goal_b, penalties)
+                cand_b = [pb for pb in result.portal_dest if pb in dist_b]
+                if cand_b:
+                    portal_b, local_b = cand_b, True
+                    warnings.append(
+                        "Destinasi disesuaikan ke jalan terhubung "
+                        "(%.0f m dari titik)" % alt_dist)
+                    log_snap(logger, "destination(fallback)", dest[0], dest[1],
+                             goal_b, result.local_dest.locations,
+                             result.local_dest.graph,
+                             result.local_dest.edge_classes)
+                else:
+                    goal_b = _snap(base_locations, dest[0], dest[1])
+                    if goal_b is None:
+                        raise AreaNotCoveredError(
+                            "Destinasi tidak terhubung ke jalan utama")
+                    dist_b, parent_b = {goal_b: 0.0}, {}
+                    portal_b, local_b = [goal_b], False
+                    warnings.append(
+                        "Destinasi tak terjangkau jalan utama; "
+                        "memakai jalan utama terdekat")
+            else:
+                goal_b = _snap(base_locations, dest[0], dest[1])
+                if goal_b is None:
+                    raise AreaNotCoveredError(
+                        "Destinasi tidak terhubung ke jalan utama")
+                dist_b, parent_b = {goal_b: 0.0}, {}
+                portal_b, local_b = [goal_b], False
+                warnings.append(
+                    "Destinasi tak terjangkau jalan utama; memakai jalan utama terdekat")
     else:
         goal_b = _snap(base_locations, dest[0], dest[1])
         if goal_b is None:
@@ -312,6 +397,7 @@ def route_hierarchical(result: HierarchicalResult,
     for nid in path_mid[1:]:
         coords.append(base_locations[nid])
     coords.extend(coords_b)
+    node_sequence = list(path_a) + list(path_mid[1:]) + list(path_b[1:])
 
     total = dist_a[pa] + cost_mid + dist_b[pb]
 
@@ -321,10 +407,10 @@ def route_hierarchical(result: HierarchicalResult,
     origin_locs = result.local_origin.locations if local_a else base_locations
     dest_graph = result.local_dest.graph if local_b else base.graph
     dest_locs = result.local_dest.locations if local_b else base_locations
-    if coords:
-        origin_proj = _snap_endpoint(
+    if coords and last_mile:
+        origin_proj = snap_point_to_graph(
             origin_graph, origin_locs, origin[0], origin[1], start_a)
-        dest_proj = _snap_endpoint(
+        dest_proj = snap_point_to_graph(
             dest_graph, dest_locs, dest[0], dest[1], goal_b)
         coords[0] = origin_proj
         coords[-1] = dest_proj
@@ -334,4 +420,4 @@ def route_hierarchical(result: HierarchicalResult,
     warning = result.warning
     if warnings:
         warning = (warning + "; " if warning else "") + "; ".join(warnings)
-    return coords, total, result.source, warning
+    return coords, total, result.source, warning, node_sequence

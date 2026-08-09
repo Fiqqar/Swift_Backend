@@ -51,6 +51,8 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 .lg-yellow { background: #f4c20d; }
 .lg-orange { background: #f0741f; }
 .lg-red { background: #d81b1b; }
+.traffic-note { font-size: 11px; color: #5b6b7b; margin-top: 6px; }
+.mode-row.vehicle label { font-size: 12px; padding: 8px 2px; }
 #log { min-height: 40px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0d1b26; color: #7ff59b; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .leaflet-container { font: inherit; }
 .leaflet-popup-content { font-size: 13px; font-weight: 600; color: #1f2933; margin: 10px 14px; }

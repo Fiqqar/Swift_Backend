@@ -66,7 +66,7 @@ def main() -> None:
     print("Build base graph level=%d dari %s (bbox=%s)..." % (
         _LEVEL, pbf.basename, bbox))
     t0 = time.perf_counter()
-    graph, locations = load_graph_from_pbf(
+    graph, locations, edge_classes = load_graph_from_pbf(
         pbf.path, bbox=bbox, highway_filter=_LEVEL_HIGHWAYS[_LEVEL])
     t_scan = time.perf_counter()
     print("  scan PBF selesai dalam %.0f detik "
@@ -75,7 +75,8 @@ def main() -> None:
               sum(len(v) for v in graph.values())))
 
     pg = build_path_graph(graph, locations, ref_lat, ref_lon,
-                          landmarks_k=0, enable_ch=False)
+                          landmarks_k=0, enable_ch=False,
+                          edge_classes=edge_classes)
     t_build = time.perf_counter()
     print("  build PathGraph selesai dalam %.0f detik" % (t_build - t_scan))
 

@@ -130,6 +130,11 @@
     return document.querySelector('input[name="mode"]:checked').value;
   }
 
+  function vehicleMode() {
+    var el = document.querySelector('input[name="vehicle"]:checked');
+    return el ? el.value : 'car';
+  }
+
   map.on('click', function (e) {
     placePoint(mode(), e.latlng);
   });
@@ -151,15 +156,40 @@
     return secs + ' dtk';
   }
 
+  function drawRouteTraffic(group, coords, trafficSegments) {
+    if (!group || !coords || !trafficSegments || !trafficSegments.length) return;
+    trafficSegments.forEach(function (seg) {
+      var start = Math.max(0, seg.start_index);
+      var end = Math.min(coords.length - 1, seg.end_index);
+      if (start >= end) return;
+      var pts = [];
+      for (var j = start; j <= end; j++) pts.push([coords[j][0], coords[j][1]]);
+      var closed = seg.multiplier >= 4;
+      L.polyline(pts, {
+        color: trafficColor(seg.multiplier),
+        weight: 7,
+        opacity: 0.85,
+        pane: 'route',
+        dashArray: closed ? '8 6' : null
+      }).addTo(group);
+    });
+  }
+
   function drawRoute(payload) {
-    routeLayer = L.polyline(payload.route_coordinates.map(function (p) { return [p[0], p[1]]; }), {
+    if (routeLayer) map.removeLayer(routeLayer);
+    var coords = payload.route_coordinates || [];
+    var group = L.layerGroup().addTo(map);
+    var main = L.polyline(coords.map(function (p) { return [p[0], p[1]]; }), {
       color: '#0f6dc1', weight: 5, opacity: 0.85, pane: 'route'
-    }).addTo(map);
-    map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+    });
+    main.addTo(group);
+    drawRouteTraffic(group, coords, payload.traffic_segments);
+    routeLayer = group;
+    map.fitBounds(main.getBounds(), { padding: [30, 30] });
     if (payload.estimated_time_seconds != null) {
-      routeLayer.bindPopup('Estimasi waktu: ' + formatEta(payload.estimated_time_seconds));
-      var mid = payload.route_coordinates[Math.floor(payload.route_coordinates.length / 2)];
-      if (mid) routeLayer.openPopup(mid);
+      main.bindPopup('Estimasi waktu: ' + formatEta(payload.estimated_time_seconds));
+      var mid = coords[Math.floor(coords.length / 2)];
+      if (mid) main.openPopup(mid);
     }
   }
 
@@ -225,7 +255,10 @@
     $('r-status').textContent = data.status || '-';
     $('r-dist').textContent = data.total_distance_meters != null ? (data.total_distance_meters.toLocaleString('id-ID') + ' m') : '-';
     $('r-points').textContent = data.route_coordinates ? data.route_coordinates.length : '-';
+    $('r-eta').textContent = data.estimated_time_seconds != null ? formatEta(data.estimated_time_seconds) : '-';
     $('r-radius').textContent = data.graph_radius_meters != null ? ((data.graph_radius_meters / 1000).toLocaleString('id-ID') + ' km') : '-';
+    $('r-traffic').textContent = data.traffic_segments ? (data.traffic_segments.length + ' segmen') : '-';
+    $('r-warning').textContent = data.warning || '-';
     var src = data.source || '';
     if (src) {
       applySource(src);
@@ -251,7 +284,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           origin: { latitude: origin[0], longitude: origin[1] },
-          destination: { latitude: dest[0], longitude: dest[1] }
+          destination: { latitude: dest[0], longitude: dest[1] },
+          mode: vehicleMode(),
+          last_mile_precision: $('chk-lastmile').checked,
+          dynamic_rerouting: $('chk-reroute').checked
         }),
         signal: controller.signal
       });
@@ -261,7 +297,7 @@
       drawRoute(data);
       renderRouteResult(data);
       if (isPbf(data.source) || data.source === 'osm') {
-        log('Rute OK: ' + data.total_distance_meters.toLocaleString('id-ID') + ' m, ' + data.route_coordinates.length + ' titik (sumber=' + data.source + ')' + (data.warning ? ' — peringatan: ' + data.warning : ''));
+        log('Rute OK: ' + data.total_distance_meters.toLocaleString('id-ID') + ' m, ' + data.route_coordinates.length + ' titik (' + vehicleMode() + ', sumber=' + data.source + ')' + (data.warning ? ' — peringatan: ' + data.warning : ''));
       } else {
         log('Rute dihitung tanpa data peta (offline)');
       }
@@ -344,7 +380,11 @@
     routeLayer = trackLayer = null;
     $('txt-origin').textContent = '-'; $('txt-dest').textContent = '-';
     $('btn-route').disabled = true;
-    $('r-status').textContent = '-'; $('r-dist').textContent = '-'; $('r-points').textContent = '-'; $('r-radius').textContent = '-'; $('r-source').textContent = '-';
+    $('r-status').textContent = '-'; $('r-dist').textContent = '-'; $('r-points').textContent = '-'; $('r-radius').textContent = '-'; $('r-source').textContent = '-'; $('r-eta').textContent = '-'; $('r-traffic').textContent = '-'; $('r-warning').textContent = '-';
+    var veh = document.querySelector('input[name="vehicle"][value="car"]');
+    if (veh) veh.checked = true;
+    $('chk-lastmile').checked = true;
+    $('chk-reroute').checked = false;
     setBadge('b-source', 'sumber: ?', '');
     hideNotice();
     log('Peta direset.');

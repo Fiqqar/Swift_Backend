@@ -15,13 +15,6 @@ _DEFAULT_WARMUP_PAIRS = [(-6.8048, 110.8385, -6.8100, 110.8500)]
 
 
 def _region_bbox() -> tuple | None:
-    """Baca REGION_GRAPH_BBOX (lat1,lon1,lat2,lon2).
-
-    Graf regional ini memakai filter jalan utama dan mencakup area yang lebih
-    luas (default Kudus-Semarang-Pati-Jepara) sehingga rute jarak kota
-    menengah tidak memicu scan file PBF besar per-request. Set
-    REGION_GRAPH_ENABLED=0 untuk menonaktifkan.
-    """
     if os.environ.get("REGION_GRAPH_ENABLED", "1") != "1":
         return None
     raw = os.environ.get("REGION_GRAPH_BBOX", "").strip()
@@ -162,8 +155,6 @@ async def lifespan(app: FastAPI):
                         lat, lon, exc)
         city_task = asyncio.create_task(_prewarm_city_graphs(cities))
 
-        # Prewarm sel covering (graf gang level-1) agar rute pendek (<=
-        # LOCAL_ROUTE_MAX_KM) di dalam kota langsung instan saat diminta.
         from app.services.pathfinding.graph_loader import (
             load_local_graph_covering,
         )
@@ -401,7 +392,7 @@ def _build_health():
                 demo_origin[0], demo_origin[1],
                 demo_dest[0], demo_dest[1],
             )
-            graph, locations, source, warning = load_osm_graph_by_point(
+            graph, locations, edge_classes, source, warning = load_osm_graph_by_point(
                 lat=demo_origin[0], lon=demo_origin[1],
                 dist_meters=dist_meters,
                 origin=demo_origin, dest=demo_dest,
@@ -443,7 +434,7 @@ def _build_health():
             )
             hier = build_hierarchical(
                 -6.8048, 110.8385, -6.1751, 106.8650)
-            coords, total, _src, warn = route_hierarchical(hier)
+            coords, total, _src, warn, _nodes = route_hierarchical(hier)
             hierarchical_test = {
                 "ok": bool(coords),
                 "total_distance_meters": round(total, 2) if coords else None,
