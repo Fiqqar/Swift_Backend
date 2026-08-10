@@ -20,7 +20,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from app.services.pathfinding.connectivity import nearest_node_reaching
+from app.services.pathfinding.connectivity import (
+    nearest_node_reaching,
+    resolve_goal,
+)
 from app.services.pathfinding.core_a_star import (
     edge_id,
     haversine_distance,
@@ -375,8 +378,41 @@ def route_hierarchical(result: HierarchicalResult,
         pb = min(portal_b, key=lambda p: dist_b[p])
 
     path_mid, cost_mid = engine_route(base, pa, pb, penalties)
+
+    # Rute tengah kosong: portal/ujung bisa terlanda stub base yang terputus
+    # (mode kendaraan terbatas seperti truck). Re-snap ujung ke node base
+    # terdekat yang benar-benar terjangkau dari sisi lawan.
     if not path_mid:
-        raise AreaNotCoveredError("Rute tengah tidak ditemukan")
+        blocked_edges = _blocked_edges(penalties)
+        alt_b, alt_dist, _ = resolve_goal(
+            base.graph, base_locations, pa, dest, goal_b,
+            blocked_edge_ids=blocked_edges, k=16,
+            max_dist=_MAX_SNAP_DIST)
+        if alt_b is not None and alt_b != goal_b:
+            goal_b = alt_b
+            pb = alt_b
+            dist_b, parent_b = {pb: 0.0}, {}
+            portal_b, local_b = [pb], False
+            warnings.append(
+                "Destinasi disesuaikan ke jalan utama terhubung "
+                "(%.0f m dari titik)" % alt_dist)
+            path_mid, cost_mid = engine_route(base, pa, pb, penalties)
+        if not path_mid:
+            alt_a, alt_dist, _ = resolve_goal(
+                base.graph, base_locations, pb, origin, start_a,
+                blocked_edge_ids=blocked_edges, k=16,
+                max_dist=_MAX_SNAP_DIST)
+            if alt_a is not None and alt_a != start_a:
+                start_a = alt_a
+                pa = alt_a
+                dist_a, parent_a = {pa: 0.0}, {}
+                portal_a, local_a = [pa], False
+                warnings.append(
+                    "Origin disesuaikan ke jalan utama terhubung "
+                    "(%.0f m dari titik)" % alt_dist)
+                path_mid, cost_mid = engine_route(base, pa, pb, penalties)
+        if not path_mid:
+            raise AreaNotCoveredError("Rute tengah tidak ditemukan")
 
     # --- Rekonstruksi path lokal -----------------------------------------
     if local_a:

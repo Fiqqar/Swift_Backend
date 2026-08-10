@@ -6,8 +6,11 @@ dimuat lazy ke RAM saat request jarak jauh pertama.
 
     python scripts/build_base_graph.py
 
-Output: <OSMNX_DISK_CACHE>/base_v3_<pbf_id>_l3.pkl (dipakai otomatis oleh
+Output: <OSMNX_DISK_CACHE>/base_v4_<pbf_id>_l3.pkl (dipakai otomatis oleh
 app.services.pathfinding.graph_loader.load_base_graph).
+
+v4: menyertakan edge_classes (kelas jalan OSM per edge) yang diperlukan
+filter kendaraan (vehicle.py) di lapisan tengah rute antar-kota.
 """
 
 import logging
@@ -50,7 +53,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s")
     pbf = _pick_pbf()
     out_path = os.path.join(
-        _DISK_CACHE_DIR, "base_v3_%s_l%d.pkl" % (pbf.pbf_id, _LEVEL))
+        _DISK_CACHE_DIR, "base_v4_%s_l%d.pkl" % (pbf.pbf_id, _LEVEL))
 
     if os.path.exists(out_path):
         print("Base graph sudah ada: %s" % out_path)

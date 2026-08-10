@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import math
@@ -22,6 +23,8 @@ CORRIDOR_KEY_PREFIX = "traffic:corridor:"
 # Cache index node base graph per objek graf.
 _NODE_INDEX_CACHE: dict[int, tuple] = {}
 
+_CORRIDOR_MAX_CONCURRENT = 5
+
 
 def _probe_radius_km() -> float:
     try:
@@ -37,11 +40,35 @@ def _od_ttl() -> int:
         return 300
 
 
-def _corridor_samples() -> int:
+def _corridor_sample_km() -> float:
+    """Jarak antar titik sampel corridor (km). Default 40 km."""
     try:
-        return max(3, min(5, int(os.environ.get("TOMTOM_CORRIDOR_SAMPLES", "4"))))
+        return max(5.0, float(os.environ.get("TOMTOM_CORRIDOR_SAMPLE_KM", "40")))
     except ValueError:
-        return 4
+        return 40.0
+
+
+def _corridor_max_samples() -> int:
+    """Batas atas jumlah titik sampel corridor. Default 20."""
+    try:
+        return max(3, int(os.environ.get("TOMTOM_CORRIDOR_MAX_SAMPLES", "20")))
+    except ValueError:
+        return 20
+
+
+def _corridor_sample_count(route_coordinates: list) -> int:
+    """Jumlah titik sampel corridor berbasis jarak rute.
+
+    Satu titik sampel per `_corridor_sample_km()` km di sepanjang rute,
+    dibatasi `_corridor_max_samples()`. Minimal 3 titik agar rute pendek
+    tetap ter-probe cukup padat.
+    """
+    total_km = 0.0
+    for i in range(1, len(route_coordinates)):
+        total_km += haversine_distance(
+            route_coordinates[i - 1], route_coordinates[i]) / 1000.0
+    n = int(math.ceil(total_km / _corridor_sample_km()))
+    return max(3, min(_corridor_max_samples(), n))
 
 
 def _congestion_ratio() -> float:
@@ -237,24 +264,38 @@ async def probe_corridor(app, redis,
     provider = TomTomProvider()
     ratio = _congestion_ratio()
 
-    samples = _sample_route_points(route_coordinates, _corridor_samples())
+    samples = _sample_route_points(
+        route_coordinates, _corridor_sample_count(route_coordinates))
     penalties: dict[int, float] = {}
     filled: set[int] = set()
     congested = False
+
+    probe_points = []
     for lat, lon in samples:
-        probe_points = _select_probe_points(graph, locations, lat, lon,
-                                            max_points=1)
-        grid = _grid_key(*probe_points[0])
-        key = CORRIDOR_KEY_PREFIX + grid
+        pts = _select_probe_points(graph, locations, lat, lon, max_points=1)
+        probe_points.append(pts[0])
+
+    _corridor_sem = asyncio.Semaphore(_CORRIDOR_MAX_CONCURRENT)
+
+    async def _probe_grid(idx: int) -> dict:
+        p = probe_points[idx]
+        key = CORRIDOR_KEY_PREFIX + _grid_key(*p)
         cached = await _redis_get_json(redis, key)
-        if cached is None:
-            events = await provider.fetch_points(probe_points)
-            cached = {}
-            for event in events:
-                for edge in snap_segment(
-                        graph, locations, event.coordinates, tolerance):
-                    cached[str(edge)] = event.weight
-            await _redis_set_json(redis, key, cached, ttl=_od_ttl())
+        if cached is not None:
+            return cached
+        async with _corridor_sem:
+            events = await provider.fetch_points([p])
+        cached = {}
+        for event in events:
+            for edge in snap_segment(
+                    graph, locations, event.coordinates, tolerance):
+                cached[str(edge)] = event.weight
+        await _redis_set_json(redis, key, cached, ttl=_od_ttl())
+        return cached
+
+    grid_caches = await asyncio.gather(
+        *[_probe_grid(i) for i in range(len(probe_points))])
+    for cached in grid_caches:
         for edge_str, weight in cached.items():
             edge = int(edge_str)
             if edge in filled:

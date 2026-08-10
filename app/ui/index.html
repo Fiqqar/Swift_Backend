@@ -20,7 +20,16 @@
 </header>
 <div id="notice"></div>
 <main>
-  <div id="map"></div>
+  <div id="map">
+    <div id="route-sheet" class="route-sheet">
+      <div class="sheet-header">
+        <span id="sheet-title">Pilih Rute</span>
+        <button type="button" id="sheet-close" class="sheet-close" title="Tutup">×</button>
+      </div>
+      <div id="sheet-list"></div>
+    </div>
+  </div>
+  <div id="toasts"></div>
   <div id="panel">
     <section>
       <h2>Atur Titik</h2>
@@ -100,7 +109,7 @@
         <span class="lg lg-orange"></span><span>Padat</span>
         <span class="lg lg-red"></span><span>Tertutup</span>
       </div>
-      <div class="traffic-note">Garis rute (biru) akan terwarnai pada bagian yang kena traffic.</div>
+      <div class="traffic-note">Segmen traffic yang <b>lancar (hijau)</b> tidak ditampilkan di rute. Rute (biru) hanya terwarnai pada bagian macet/padat/tertutup.</div>
     </section>
 
     <section>

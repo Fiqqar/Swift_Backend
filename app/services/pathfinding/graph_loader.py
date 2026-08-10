@@ -983,7 +983,7 @@ _base_pg: PathGraph | None = None
 def base_pickle_path() -> str | None:
     """Lokasi pickle base graph bila ada (cocok dgn PBF aktif)."""
     suffix = "_l%d.pkl" % _BASE_LEVEL
-    prefix = "base_v3_"
+    prefix = "base_v4_"
     try:
         names = [n for n in os.listdir(_DISK_CACHE_DIR)
                  if n.startswith(prefix) and n.endswith(suffix)]
