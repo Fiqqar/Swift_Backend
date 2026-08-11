@@ -13,18 +13,6 @@ _MAX_CONCURRENCY = 5
 
 
 class TomTomProvider:
-    """Integrasi data lalu lintas TomTom (Traffic Flow Segment Data API).
-
-    API bersifat point-based: satu request per titik probe (lat,lon), dan
-    respons mengembalikan segmen jalan terdekat dengan kecepatan arus saat
-    ini vs free-flow. Multiplier dihitung sebagai freeFlowSpeed/currentSpeed
-    (clamp 1..10); roadClosure=true berarti penutupan jalan total (infinity).
-
-    Diaktifkan dengan TOMTOM_KEY dan daftar titik probe di
-    TOMTOM_PROBE_POINTS (format "lat,lon|lat,lon|..."). Tanpa keduanya,
-    fetch() mengembalikan [] sehingga aman di-off secara default.
-    """
-
     name = "tomtom"
 
     def __init__(self, api_key: str | None = None):
@@ -53,11 +41,6 @@ class TomTomProvider:
 
     async def fetch_points(
             self, points: list[tuple[float, float]]) -> list[TrafficEvent]:
-        """Query TomTom untuk daftar titik probe tertentu (on-demand).
-
-        Dipakai mode smart_hybrid: panggil hanya utk titik probe di sekitar
-        Origin & Destination. Mengembalikan [] bila tanpa key.
-        """
         if not self.api_key:
             return []
         if not points:
@@ -100,10 +83,6 @@ class TomTomProvider:
                 return None
 
     def _parse_segment(self, data) -> TrafficEvent | None:
-        """Terjemahkan satu respons flowSegmentData menjadi TrafficEvent.
-
-        Kembalikan None bila data tidak valid atau confidence di bawah ambang.
-        """
         try:
             flow = data.get("flowSegmentData") or {}
             coordinates = (flow.get("coordinates") or {}).get("coordinate") or []

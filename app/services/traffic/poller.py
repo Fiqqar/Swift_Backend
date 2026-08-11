@@ -11,9 +11,6 @@ from app.services.traffic.provider import get_providers, traffic_enabled
 
 logger = logging.getLogger("pathfinding")
 
-# Prioritas provider saat dua provider melaporkan edge yang sama:
-# tomtom (indeks kecil) menang atas internal. Edge yang sudah diisi provider
-# berprioritas lebih tinggi tidak ditimpa.
 _PROVIDER_PRIORITY = {"tomtom": 0, "internal": 1}
 
 
@@ -35,12 +32,6 @@ def _snap_tolerance() -> float | None:
 
 
 def _reference_graph(app):
-    """Pilih graf untuk proyeksi segmen -> edge_id.
-
-    Prioritas: region graph -> path graph (warmup) -> base graph. Graf ini
-    hanya dipakai sebagai "geometri rujukan"; penalti tersimpan per edge_id
-    node OSM sehingga berlaku juga pada graf lokal tile saat routing.
-    """
     pg = (getattr(app.state, "region_graph", None)
           or getattr(app.state, "path_graph", None))
     if pg is not None and getattr(pg, "graph", None):
@@ -69,7 +60,6 @@ async def _collect_events(providers) -> list:
 
 
 async def poll_once(app, redis) -> int:
-    """Satu siklus pengambilan traffic; kembalikan jumlah penalti tersimpan."""
     graph, locations = _reference_graph(app)
     if graph is None or locations is None:
         logger.warning(
@@ -101,7 +91,6 @@ async def poll_once(app, redis) -> int:
 
 
 async def traffic_poller(app, redis) -> None:
-    """Loop background: ambil data traffic periodik lalu simpan ke Redis."""
     interval = _poll_interval()
     logger.info("[TRAFFIC] Poller dimulai (interval %.0fs).", interval)
     while True:

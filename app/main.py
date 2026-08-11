@@ -32,11 +32,6 @@ def _region_bbox() -> tuple | None:
 
 
 def _warmup_pairs() -> list:
-    """Baca WARMUP_ANCHORS (lat1,lon1[,lat2,lon2] dipisah '|').
-
-    Format 2 angka = satu titik; 4 angka = pasangan origin->dest.
-    Default: pasangan Monas seperti sebelumnya.
-    """
     raw = os.environ.get("WARMUP_ANCHORS", "").strip()
     if not raw:
         return list(_DEFAULT_WARMUP_PAIRS)
@@ -67,11 +62,6 @@ def _demo_pair():
 
 
 def _prewarm_cities() -> list:
-    """Baca PREWARM_CITIES (lat,lon dipisah '|').
-
-    Kota prioritas: graf local (dari tile) dibangun di background saat
-    startup agar rute dari/ke kota itu langsung instan.
-    """
     raw = os.environ.get("PREWARM_CITIES", "").strip()
     if not raw:
         return []
@@ -311,7 +301,7 @@ def _build_health():
     osmnx_available = False
     osmnx_error = None
     try:
-        import osmnx  # noqa: F401
+        import osmnx
         osmnx_available = True
     except Exception as exc:
         osmnx_error = f"{type(exc).__name__}: {exc}"
@@ -345,7 +335,6 @@ def _build_health():
             from app.services.pathfinding.core_engine import route as engine_route
             from app.services.pathfinding.graph_loader import find_nearest_node
 
-            # Uji rute di wilayah graf yang sedang dimuat (cepat, region-agnostik).
             radius = max(pg.radius, 1000)
             d_deg = radius / 111320.0
             candidates = [

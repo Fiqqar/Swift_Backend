@@ -56,6 +56,7 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 #log { min-height: 40px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0d1b26; color: #7ff59b; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .leaflet-container { font: inherit; }
 .leaflet-popup-content { font-size: 13px; font-weight: 600; color: #1f2933; margin: 10px 14px; }
+.route-info-popup .leaflet-popup-content { font-size: 12px; margin: 8px 12px; line-height: 1.4; }
 
 /* --- Bottom sheet pilihan rute ---------------------------------------- */
 #route-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 700; display: none; flex-direction: column; background: #fff; border-top: 1px solid #d7dde3; box-shadow: 0 -6px 20px rgba(15, 42, 67, .18); border-radius: 14px 14px 0 0; padding: 10px 14px 12px; max-height: 46%; overflow-y: auto; }

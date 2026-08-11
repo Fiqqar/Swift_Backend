@@ -12,22 +12,6 @@ TIMEOUT = 8.0
 
 
 class InternalIncidentProvider:
-    """Sumber data traffic internal (Incident Service).
-
-    Provider mengambil daftar insiden/segmen macet dari endpoint HTTP
-    internal (TRAFFIC_INTERNAL_URL) dengan format JSON:
-
-        {
-          "incidents": [
-            {"points": [[lat, lon], ...], "multiplier": 2.5},
-            {"points": [[lat, lon], ...], "closure": true}
-          ]
-        }
-
-    Bila URL tidak dikonfigurasi atau tidak terjangkau, fetch() mengembalikan
-    [] sehingga integrasi aman di-off secara default.
-    """
-
     name = "internal"
 
     def __init__(self, url: str | None = None):

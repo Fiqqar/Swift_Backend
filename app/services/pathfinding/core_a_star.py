@@ -14,11 +14,6 @@ def haversine_distance(coord1: tuple, coord2: tuple) -> float:
 
 
 def _closest_point_on_segment(p: tuple, a: tuple, b: tuple) -> tuple:
-    """Proyeksi titik p ke segmen a-b (lat, lon). Kembalikan (lat, lon).
-
-    Menggunakan proyeksi equirectangular lokal agar fraksi dihitung secara
-    proporsional terhadap jarak meter (bukan derajat mentah).
-    """
     coslat = math.cos(math.radians((a[0] + b[0]) / 2.0))
     ax, ay = a[1] * coslat, a[0]
     bx, by = b[1] * coslat, b[0]
@@ -36,12 +31,6 @@ def _closest_point_on_segment(p: tuple, a: tuple, b: tuple) -> tuple:
 
 def _snap_endpoint(graph: dict, locations: dict, lat: float, lon: float,
                    node_id: int) -> tuple:
-    """Proyeksikan titik ke segmen jalan terdekat yang bersisian dgn node_id.
-
-    Titik tujuan diletakkan di atas ruas jalan (bukan hanya node terdekat)
-    agar koordinat akhir presisi. Fallback ke posisi node bila tak ada
-    tetangga. Kembalikan (lat, lon).
-    """
     best = locations[node_id]
     best_d = haversine_distance((lat, lon), best)
     for nbr in graph.get(node_id, {}):
@@ -55,14 +44,12 @@ def _snap_endpoint(graph: dict, locations: dict, lat: float, lon: float,
 
 
 def edge_id(u: int, v: int) -> int:
-    """ID edge numerik deterministik dari pasangan node (Cantor pairing)."""
     a = u if u >= 0 else 2 * (-u) - 1
     b = v if v >= 0 else 2 * (-v) - 1
     return (a + b) * (a + b + 1) // 2 + b
 
 
 def precompute_geo(locations: dict) -> dict:
-    """Siapkan nilai trigonometri per node agar haversine dihitung cepat."""
     out = {}
     for node_id, (lat, lon) in locations.items():
         lat_r = math.radians(lat)

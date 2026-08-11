@@ -103,19 +103,12 @@ def live_tracking_enabled() -> bool:
 
 
 def _blocked_edge_ids(penalties: dict | None) -> set:
-    """Edge dengan penalty inf (diblokir penuh, mis. filter mode kendaraan)."""
     if not penalties:
         return set()
     return {eid for eid, mult in penalties.items() if mult == float("inf")}
 
 
 def _traffic_segments(node_sequence, penalties) -> list[TrafficRouteSegment]:
-    """Span route_coordinates yang kena traffic (untuk pewarnaan overlay).
-
-    node_sequence = daftar node OSM per titik route_coordinates. Setiap
-    pasangan node berurutan dipetakan ke edge_id lalu dicocokkan dgn penalties
-    traffic; indeks yang kena digabung menjadi rentang [start_index, end_index].
-    """
     if not node_sequence or len(node_sequence) < 2 or not penalties:
         return []
     spans = []
@@ -155,22 +148,6 @@ def _covers(pg, lat: float, lon: float) -> bool:
 
 
 def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
-    """Pilih strategi rute. Kembalikan ("graph", pg) atau ("hierarchical", h).
-
-    Prioritas ujung origin/dest adalah presisi GANG (residential), sehingga
-    semua rute > LOCAL_ROUTE_MAX_KM memakai hierarchical (graf gang level-1
-    di kedua ujung + base jalan utama di tengah). Base/region hanya fallback
-    bila tile/hierarchical tidak tersedia.
-
-    Urutan:
-      0. covering level-1 (gang) dari tile bila jarak pendek (<= LOCAL_ROUTE_MAX_KM)
-      1. hierarchical (tile gang lokal + base jalan utama) untuk jarak lebih jauh
-      2. path_graph (warmup kecil)  [fallback, tanpa gang]
-      3. region_graph (bbox region) [fallback, tanpa gang]
-      4. base_graph (jalan utama se-Jawa) [fallback terakhir]
-      5. load_graph_covering (satu graf penutup) bila dynamic/prewarm
-      6. fail-fast (di luar cakupan / non-PBF)
-    """
     dist = haversine_distance((lat1, lon1), (lat2, lon2))
     if (dist <= _LOCAL_ROUTE_MAX_M
             and tiles_enabled()
@@ -196,8 +173,6 @@ def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
 
 def _resolve_fallback_graph(app, lat1: float, lon1: float,
                             lat2: float, lon2: float):
-    """Graf fallback (tanpa gang) bila hierarchical gagal/tak tersedia.
-    Urutan: path_graph (warmup) -> region_graph -> base_graph -> covering."""
     preload = getattr(app.state, "path_graph", None)
     if (preload is not None
             and _covers(preload, lat1, lon1)
@@ -231,11 +206,6 @@ async def _route_hierarchical(hier, redis, penalties,
                               last_mile: bool = True,
                               mode: str = "car",
                               need_nodes: bool = False):
-    """Hitung rute hierarchical (dengan cache Redis). None bila tak ada rute.
-
-    Saat need_nodes=True, node_sequence tetap dihitung ulang bila respons
-    berasal dari cache (dipakai untuk multi-route & insiden).
-    """
     key = _hier_cache_key(lat1, lon1, lat2, lon2, penalties, mode)
     cached = await get_route(redis, key)
     if cached is not None:

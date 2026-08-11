@@ -12,17 +12,10 @@ _DEFAULT_TOLERANCE_M = 15.0
 
 _INDEX_CACHE: dict[int, tuple] = {}
 
-# Cache terbalik edge_id -> [coord_u, coord_v]; diisi bersamaan dgn _edge_index.
 _EDGE_GEOM_CACHE: dict[int, dict[int, list]] = {}
 
 
 def _edge_index(graph: dict, locations: dict):
-    """Bangun index spasial edge (LineString) dari graf.
-
-    Edge disimpan sebagai edge_id (Cantor pairing node OSM) sehingga penalti
-    yang dihasilkan berlaku lintas graf (base/region/tile) selama node berasal
-    dari sumber OSM yang sama. Index di-cache per objek graf.
-    """
     key = id(graph)
     cached = _INDEX_CACHE.get(key)
     if cached is not None:
@@ -62,11 +55,6 @@ def _edge_index(graph: dict, locations: dict):
 def snap_segment(graph: dict, locations: dict,
                  coordinates: list[tuple[float, float]],
                  tolerance_m: float | None = None) -> list[int]:
-    """Proyeksikan polyline segmen ke edge graf; kembalikan edge_id terpengaruh.
-
-    Setiap titik polyline di-buffer dengan tolerance_m lalu di-query ke
-    STRtree. Edge yang menyentuh buffer dianggap terkena dampak traffic.
-    """
     if not coordinates or len(coordinates) < 2:
         return []
     tol = tolerance_m if tolerance_m is not None else _DEFAULT_TOLERANCE_M
@@ -82,7 +70,6 @@ def snap_segment(graph: dict, locations: dict,
     geometry = LineString([(lon, lat) for lat, lon in coordinates])
     buffered = geometry.buffer(max(dlat, dlon))
 
-    # STRtree.query mengembalikan array indeks geometri yang berpotongan.
     hits: set[int] = set()
     for i in tree.query(buffered):
         hits.add(ids[int(i)])
@@ -91,17 +78,6 @@ def snap_segment(graph: dict, locations: dict,
 
 def penalized_segments(graph: dict, locations: dict,
                        penalties: dict[int, float]):
-    """Segmen edge yang dikenai penalti, lengkap dengan geometrinya.
-
-    Kembalikan list dict: {edge_id, multiplier, closure, coordinates},
-    dengan coordinates = [[lat, lon], [lat, lon]] (koordinat node u dan v).
-    Dipakai untuk menampilkan overlay traffic di peta; geometri persis sama
-    dengan edge yang dipakai routing (node OSM yang sama).
-
-    Menggunakan cache terbalik edge_id -> geometri (diisi bersama _edge_index),
-    sehingga hanya edge yang ada di `penalties` yang diproses (bukan seluruh
-    graf). Cepat bahkan untuk base graph se-Jawa.
-    """
     _edge_index(graph, locations)
     edge_geom = _EDGE_GEOM_CACHE.get(id(graph), {})
     segments: list[dict] = []

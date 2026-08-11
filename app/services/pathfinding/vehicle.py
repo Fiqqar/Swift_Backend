@@ -1,11 +1,3 @@
-"""Vehicle transport mode: blokir edge yang tidak diizinkan per mode.
-
-Mode kendaraan (motorcycle/car/truck) memetakan tag highway OSM
-(`edge_classes` pada PathGraph) ke set kelas jalan yang diizinkan. Edge
-yang tidak diizinkan diberi penalty inf sehingga routing engine
-menghindarinya. Lihat docs/feature/verhicle_transport.md.
-"""
-
 import logging
 
 logger = logging.getLogger("pathfinding.vehicle")
@@ -41,7 +33,6 @@ def _pg_edge_classes(pg) -> dict:
 
 
 def _log_stale_graph(pg, logger) -> None:
-    """Peringatkan sekali bila graf tanpa edge_classes (build lama)."""
     try:
         if _pg_edge_classes(pg):
             return
@@ -56,13 +47,6 @@ def _log_stale_graph(pg, logger) -> None:
 
 
 def blocked_penalties_for(plan, mode: str) -> dict:
-    """Kembalikan {edge_id: inf} untuk edge yang dilarang mode `mode`.
-
-    `plan` adalah hasil `_resolve_plan`: ("graph", PathGraph) atau
-    ("hierarchical", HierarchicalResult). Mode tak dikenal diperlakukan
-    sebagai "car" (tanpa blokir). Edge tanpa info kelas jalan tidak
-    diblokir agar graf tetap tersambung.
-    """
     allowed = _ALLOWED_BY_MODE.get(mode, _CAR)
 
     if plan[0] == "hierarchical":

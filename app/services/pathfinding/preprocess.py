@@ -97,7 +97,6 @@ class ContractionHierarchy:
         self.shortcuts = []
 
     def _expand(self, a, b):
-        """Urai jalur a->b (mungkin lewat shortcut) menjadi edge asli."""
         seq = [(a, b)]
         while True:
             changed = False

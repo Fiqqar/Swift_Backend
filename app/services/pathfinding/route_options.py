@@ -1,17 +1,3 @@
-"""Multi-route options & incident extraction (docs/feature/route_options.md).
-
-Helper murni (tanpa I/O) yang dipakai endpoint /find-route-options:
-
-- bump_penalties : penalti alternatif dengan menaikkan bobot edge rute
-  yang sudah dipilih (penalty-bump) agar rute 2/3 mengambil jalur berbeda.
-- max_overlap    : IoU node-set dua rute untuk dedupe (skip bila hampir sama).
-- route_summary  : ringkasan jalan utama dari kelas highway OSM dominan.
-- route_incidents: roadClosure / kemacetan (delay > ambang) di sepanjang rute.
-
-Edge_id berbasis Cantor pairing node OSM sehingga konsisten lintas graf
-(base/region/tile) — lihat app/services/traffic/matcher.py.
-"""
-
 import logging
 import math
 
@@ -41,7 +27,6 @@ _MIN_CLASS_SHARE = 0.15
 
 
 def route_edges(node_sequence: list) -> set[int]:
-    """edge_id untuk tiap pasangan node berurutan pada rute."""
     if not node_sequence or len(node_sequence) < 2:
         return set()
     return {
@@ -57,12 +42,6 @@ def _is_inf(value) -> bool:
 def bump_penalties(base: dict | None,
                    used_edge_sets: list[set],
                    bump: float = 8.0) -> dict:
-    """Salin `base` lalu naikkan bobot semua edge rute yang sudah terpilih.
-
-    Edge dengan penalty inf (blokir mode kendaraan / road closure) DIJAGA inf
-    agar tidak membatalkan pembatasan; edge lain diset ke max(nilai lama, bump).
-    Kembalikan dict baru (tidak memodifikasi `base`).
-    """
     out = dict(base) if base else {}
     for edges in used_edge_sets:
         for e in edges:
@@ -74,7 +53,6 @@ def bump_penalties(base: dict | None,
 
 
 def max_overlap(ns_a: list, ns_b: list) -> float:
-    """IoU (min-normalized) himpunan node dua rute; 1.0 = identik."""
     if not ns_a or not ns_b:
         return 0.0
     sa, sb = set(ns_a), set(ns_b)
@@ -83,14 +61,12 @@ def max_overlap(ns_a: list, ns_b: list) -> float:
 
 
 def plan_graphs(plan) -> list:
-    """Graf penyusun plan: 3 graf utk hierarchical, 1 utk graph biasa."""
     if plan[0] == "hierarchical":
         return [plan[1].local_origin, plan[1].local_dest, plan[1].base]
     return [plan[1]]
 
 
 def merge_edge_classes(graphs: list) -> dict:
-    """Gabung edge_classes seluruh graf plan menjadi satu dict edge_id->kelas."""
     merged: dict = {}
     for pg in graphs:
         ec = getattr(pg, "edge_classes", None) or {}
@@ -101,11 +77,6 @@ def merge_edge_classes(graphs: list) -> dict:
 def route_summary(node_sequence: list,
                   route_coords: list,
                   edge_classes: dict) -> str:
-    """Ringkasan jalan utama: label kelas highway dominan (dibobot jarak).
-
-    Kelas dengan share >= 15% dari panjang rute ditampilkan, urut terbesar,
-    dipisah ' + '. Tanpa data kelas -> 'Rute utama'.
-    """
     if not node_sequence or len(node_sequence) < 2 or not edge_classes:
         return "Rute utama"
     share: dict[str, float] = {}
@@ -145,15 +116,6 @@ def route_incidents(node_sequence: list,
                     penalties: dict | None,
                     speed_kmh: float,
                     delay_minutes: float = 3.0) -> list[dict]:
-    """Insiden di sepanjang polyline rute.
-
-    - penalty == inf              -> road_closure (penutupan jalan).
-    - penalty > 1 dgn tundaan     -> congestion, bila tundaan > delay_minutes.
-      Tundaan edge = (panjang/(speed/3.6)) * (multiplier - 1).
-
-    Segmen edge terdampak yang berdekatan digabung jadi satu insiden.
-    Kembalikan list dict siap untuk schema RouteIncident.
-    """
     if not node_sequence or len(node_sequence) < 2 or not penalties:
         return []
     if speed_kmh <= 0:

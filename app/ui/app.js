@@ -32,6 +32,7 @@
   var trafficEnabledServer = false;
   var routeOptions = null, selectedRouteId = 1;
   var routeLines = {}, incidentLayer = null, incidentPopups = [];
+  var routeInfoPopups = [];
 
   function $(id) { return document.getElementById(id); }
   function log(msg) {
@@ -226,6 +227,32 @@
     incidentPopups = [];
   }
 
+  function clearRouteInfoPopups() {
+    routeInfoPopups.forEach(function (p) { map.removeLayer(p); });
+    routeInfoPopups = [];
+  }
+
+  function showRouteInfoPopup(route) {
+    clearRouteInfoPopups();
+    if (!route) return;
+    var coords = route.route_coordinates || [];
+    if (!coords.length) return;
+    var mid = coords[Math.floor(coords.length / 2)];
+    if (!mid) return;
+    var isBest = route.is_best || route.route_id === 1;
+    var lines = ['Rute ' + route.route_id + (isBest ? ' (Terbaik)' : '')];
+    if (route.summary) lines.push(route.summary);
+    var meta = [];
+    if (route.distance_km != null) meta.push(route.distance_km.toLocaleString('id-ID') + ' km');
+    if (route.duration_mins != null) meta.push(route.duration_mins.toLocaleString('id-ID') + ' mnt');
+    if (meta.length) lines.push(meta.join(' · '));
+    var popup = L.popup({ autoClose: false, closeOnClick: false, className: 'route-info-popup' })
+      .setLatLng([mid[0], mid[1]])
+      .setContent(lines.join('<br>'))
+      .openOn(map);
+    routeInfoPopups.push(popup);
+  }
+
   function showIncidents(route) {
     clearIncidents();
     if (!route || !route.incidents || !route.incidents.length) return;
@@ -257,6 +284,7 @@
     routeOptions = data.routes || [];
     routeLines = {};
     clearIncidents();
+    clearRouteInfoPopups();
     if (!routeOptions.length) return;
     routeLayer = L.layerGroup().addTo(map);
     routeOptions.forEach(function (opt) {
@@ -279,6 +307,7 @@
     });
     selectedRouteId = routeOptions[0].route_id || 1;
     renderRouteSheet(routeOptions);
+    selectRoute(selectedRouteId);
   }
 
   function renderRouteSheet(routes) {
@@ -343,6 +372,7 @@
     });
     var sel = null;
     routeOptions.forEach(function (opt) { if (opt.route_id === routeId) sel = opt; });
+    showRouteInfoPopup(sel);
     showIncidents(sel);
   }
 
@@ -538,6 +568,7 @@
     [routeLayer, trackLayer].forEach(function (l) { if (l) map.removeLayer(l); });
     routeLayer = trackLayer = null;
     clearIncidents();
+    clearRouteInfoPopups();
     routeOptions = null; routeLines = {};
     $('route-sheet').className = 'route-sheet';
     $('sheet-list').innerHTML = '';
