@@ -16,6 +16,11 @@ dependencies = [
     "osmium>=4.3.1 ; python_full_version < '3.14'",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
 [build-system]
 requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
