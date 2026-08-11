@@ -5,7 +5,6 @@ _BLOCKED = float("inf")
 
 
 def _neighbors(graph: dict, u, blocked_edge_ids: set) -> list:
-    """Tetangga u, kecuali edge yang diblokir (mis. access filter mode)."""
     if not blocked_edge_ids:
         return list(graph.get(u, ()))
     out = []
@@ -16,7 +15,6 @@ def _neighbors(graph: dict, u, blocked_edge_ids: set) -> list:
 
 
 def reachable(graph: dict, source, blocked_edge_ids: set | None = None) -> set:
-    """Seluruh node yang terjangkau dari source (graf terarah/one-way)."""
     if source not in graph:
         return set()
     blocked = blocked_edge_ids or set()
@@ -64,12 +62,6 @@ def _reach_any_target(graph: dict, source, targets: set,
 def resolve_goal(graph: dict, locations: dict, start_node, dest_coord: tuple,
                  goal_node, blocked_edge_ids: set | None = None,
                  k: int = 8, max_dist: float = 800.0):
-    """Cari node tujuan yang benar-benar terjangkau dari start_node.
-
-    Bila `goal_node` tidak terjangkau, coba k node terdekat dari koordinat
-    tujuan dan pilih yang terdekat yang masih terhubung ke komponen start.
-    Kembalikan (node_id | None, dist_m | None, fallback: bool).
-    """
     blocked = blocked_edge_ids or set()
     if goal_node in graph and reaches(graph, start_node, goal_node, blocked):
         return goal_node, None, False
@@ -85,11 +77,6 @@ def resolve_goal(graph: dict, locations: dict, start_node, dest_coord: tuple,
 def nearest_node_reaching(graph: dict, locations: dict, targets: set,
                           coord: tuple, blocked_edge_ids: set | None = None,
                           k: int = 8, max_dist: float = 800.0):
-    """Node terdekat ke coord yang masih bisa menjangkau salah satu `targets`.
-
-    Dipakai hierarchical: cari node lokal alternatif yang masih terhubung ke
-    portal jalan utama. Kembalikan (node_id | None, dist_m | None).
-    """
     if not targets:
         return None, None
     blocked = blocked_edge_ids or set()

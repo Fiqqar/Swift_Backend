@@ -8,6 +8,8 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, HTTPException, Request
 
 from app.schemas.pathfinding import (
+    RouteOption,
+    RouteOptionsResponse,
     RouteRequest,
     RouteResponse,
     TrafficRouteSegment,
@@ -42,6 +44,15 @@ from app.services.pathfinding.hierarchical import (
     route_hierarchical,
 )
 from app.services.pathfinding.snap import log_snap, snap_point_to_graph
+from app.services.pathfinding.route_options import (
+    bump_penalties,
+    max_overlap,
+    merge_edge_classes,
+    plan_graphs,
+    route_edges,
+    route_incidents,
+    route_summary,
+)
 from app.services.traffic.smart_hybrid import get_request_penalties
 
 router = APIRouter()
@@ -61,6 +72,20 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw in ("1", "true", "True", "TRUE", "yes", "on")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
 def last_mile_enabled(payload) -> bool:
     if payload.last_mile_precision is not None:
         return bool(payload.last_mile_precision)
@@ -78,19 +103,12 @@ def live_tracking_enabled() -> bool:
 
 
 def _blocked_edge_ids(penalties: dict | None) -> set:
-    """Edge dengan penalty inf (diblokir penuh, mis. filter mode kendaraan)."""
     if not penalties:
         return set()
     return {eid for eid, mult in penalties.items() if mult == float("inf")}
 
 
 def _traffic_segments(node_sequence, penalties) -> list[TrafficRouteSegment]:
-    """Span route_coordinates yang kena traffic (untuk pewarnaan overlay).
-
-    node_sequence = daftar node OSM per titik route_coordinates. Setiap
-    pasangan node berurutan dipetakan ke edge_id lalu dicocokkan dgn penalties
-    traffic; indeks yang kena digabung menjadi rentang [start_index, end_index].
-    """
     if not node_sequence or len(node_sequence) < 2 or not penalties:
         return []
     spans = []
@@ -130,22 +148,6 @@ def _covers(pg, lat: float, lon: float) -> bool:
 
 
 def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
-    """Pilih strategi rute. Kembalikan ("graph", pg) atau ("hierarchical", h).
-
-    Prioritas ujung origin/dest adalah presisi GANG (residential), sehingga
-    semua rute > LOCAL_ROUTE_MAX_KM memakai hierarchical (graf gang level-1
-    di kedua ujung + base jalan utama di tengah). Base/region hanya fallback
-    bila tile/hierarchical tidak tersedia.
-
-    Urutan:
-      0. covering level-1 (gang) dari tile bila jarak pendek (<= LOCAL_ROUTE_MAX_KM)
-      1. hierarchical (tile gang lokal + base jalan utama) untuk jarak lebih jauh
-      2. path_graph (warmup kecil)  [fallback, tanpa gang]
-      3. region_graph (bbox region) [fallback, tanpa gang]
-      4. base_graph (jalan utama se-Jawa) [fallback terakhir]
-      5. load_graph_covering (satu graf penutup) bila dynamic/prewarm
-      6. fail-fast (di luar cakupan / non-PBF)
-    """
     dist = haversine_distance((lat1, lon1), (lat2, lon2))
     if (dist <= _LOCAL_ROUTE_MAX_M
             and tiles_enabled()
@@ -171,8 +173,6 @@ def _resolve_plan(app, lat1: float, lon1: float, lat2: float, lon2: float):
 
 def _resolve_fallback_graph(app, lat1: float, lon1: float,
                             lat2: float, lon2: float):
-    """Graf fallback (tanpa gang) bila hierarchical gagal/tak tersedia.
-    Urutan: path_graph (warmup) -> region_graph -> base_graph -> covering."""
     preload = getattr(app.state, "path_graph", None)
     if (preload is not None
             and _covers(preload, lat1, lon1)
@@ -204,12 +204,21 @@ async def _route_hierarchical(hier, redis, penalties,
                               lat1: float, lon1: float,
                               lat2: float, lon2: float,
                               last_mile: bool = True,
-                              mode: str = "car"):
-    """Hitung rute hierarchical (dengan cache Redis). None bila tak ada rute."""
+                              mode: str = "car",
+                              need_nodes: bool = False):
     key = _hier_cache_key(lat1, lon1, lat2, lon2, penalties, mode)
     cached = await get_route(redis, key)
     if cached is not None:
-        return RouteResponse(**cached), None
+        if not need_nodes:
+            return RouteResponse(**cached), None
+        try:
+            coords, _, _, _, node_sequence = await run_in_threadpool(
+                route_hierarchical, hier, penalties, last_mile)
+        except AreaNotCoveredError:
+            return RouteResponse(**cached), None
+        if not coords:
+            node_sequence = None
+        return RouteResponse(**cached), node_sequence
     try:
         coords, total, source, warning, node_sequence = await run_in_threadpool(
             route_hierarchical, hier, penalties, last_mile)
@@ -234,19 +243,13 @@ async def _compute_route(app, plan, redis, penalties,
                          lat1: float, lon1: float,
                          lat2: float, lon2: float,
                          last_mile: bool = True,
-                         mode: str = "car"):
-    """Hitung rute sesuai plan dengan penalties tertentu.
-
-    Menangani plan hierarchical (dengan fallback graf tanpa gang bila
-    hierarchical gagal 400) dan plan graf (dengan cadangan hierarchical bila
-    graf lokal terputus). Kembalikan (RouteResponse|None, node_sequence|None);
-    node_sequence dipakai untuk pewarnaan segmen traffic.
-    """
+                         mode: str = "car",
+                         need_nodes: bool = False):
     if plan[0] == "hierarchical":
         try:
             return await _route_hierarchical(
                 plan[1], redis, penalties, lat1, lon1, lat2, lon2,
-                last_mile, mode)
+                last_mile, mode, need_nodes=need_nodes)
         except HTTPException as e:
             if e.status_code != 400:
                 raise
@@ -285,7 +288,12 @@ async def _compute_route(app, plan, redis, penalties,
 
     cached = await get_route(redis, key)
     if cached is not None:
-        return RouteResponse(**cached), None
+        if not need_nodes:
+            return RouteResponse(**cached), None
+        node_path, _ = await run_in_threadpool(
+            engine_route, pg, start_node, goal_node, penalties)
+        node_sequence = list(node_path) if node_path else None
+        return RouteResponse(**cached), node_sequence
 
     t_route = perf_counter()
     node_path, total_distance = await run_in_threadpool(
@@ -293,8 +301,6 @@ async def _compute_route(app, plan, redis, penalties,
     logger.info("[PERF] Rust Engine Pathfinding Search: %.1f ms",
                 (perf_counter() - t_route) * 1000.0)
 
-    # Goal terputus (no path): coba node tujuan alternatif terdekat yang masih
-    # terjangkau dari komponen graf utama (pulau terpisah, docs: last-mile).
     if not node_path:
         new_goal, alt_dist, _ = await run_in_threadpool(
             resolve_goal, pg.graph, pg.locations, start_node,
@@ -307,7 +313,12 @@ async def _compute_route(app, plan, redis, penalties,
             key = route_key(scope, start_node, goal_node, penalties)
             cached = await get_route(redis, key)
             if cached is not None:
-                return RouteResponse(**cached), None
+                if not need_nodes:
+                    return RouteResponse(**cached), None
+                node_path, _ = await run_in_threadpool(
+                    engine_route, pg, start_node, goal_node, penalties)
+                node_sequence = list(node_path) if node_path else None
+                return RouteResponse(**cached), node_sequence
             t_route = perf_counter()
             node_path, total_distance = await run_in_threadpool(
                 engine_route, pg, start_node, goal_node, penalties)
@@ -318,8 +329,7 @@ async def _compute_route(app, plan, redis, penalties,
                      pg.locations, pg.graph, pg.edge_classes)
 
     if not node_path:
-        # Graf lokal (tile) dapat terputus di batas tile/rect. Cadangan:
-        # rute hierarchical (base graph tersambung lintas Jawa).
+       
         if getattr(pg, "source", "").startswith("tile:"):
             try:
                 hier = await run_in_threadpool(
@@ -336,8 +346,7 @@ async def _compute_route(app, plan, redis, penalties,
     node_sequence = list(node_path)
     route_coords = [pg.locations[node_id] for node_id in node_path]
 
-    # Presisi ujung: proyeksikan origin & destination ke ruas jalan terdekat
-    # (bukan hanya node terdekat) agar koordinat akhir menempel pada jalan.
+  
     if last_mile:
         start_proj = await run_in_threadpool(
             snap_point_to_graph, pg.graph, pg.locations, lat1, lon1, start_node)
@@ -361,12 +370,102 @@ async def _compute_route(app, plan, redis, penalties,
     return response, node_sequence
 
 
+def _normalize_mode(payload) -> str:
+    raw = payload.mode or os.environ.get("VEHICLE_MODE", "car").strip().lower()
+    return raw if raw in ("motorcycle", "car", "truck") else "car"
+
+
+def _physical_distance(coords: list) -> float:
+    total = 0.0
+    for i in range(1, len(coords)):
+        total += haversine_distance(coords[i - 1], coords[i])
+    return total
+
+
+async def _best_route(app, plan, redis, traffic_penalties,
+                      payload, mode: str, lat1: float, lon1: float,
+                      lat2: float, lon2: float,
+                      need_nodes: bool = True):
+   
+    penalties = traffic_penalties
+    
+    from app.services.pathfinding.vehicle import blocked_penalties_for
+    blocked = await run_in_threadpool(
+        blocked_penalties_for, plan, mode)
+    if blocked:
+        penalties = dict(penalties)
+        penalties.update(blocked)
+
+    last_mile = last_mile_enabled(payload)
+    try:
+        response, node_sequence = await _compute_route(
+            app, plan, redis, penalties, lat1, lon1, lat2, lon2,
+            last_mile, mode, need_nodes=need_nodes)
+    except HTTPException as e:
+        if e.status_code != 400 or mode == "car":
+            raise
+        logger.info("[VEHICLE] Mode %s gagal (%s), fallback ke car.",
+                    mode, e.detail)
+        response, node_sequence = None, None
+
+    if response is None and mode != "car":
+        fallback_mode = mode
+        mode = "car"
+        penalties = dict(traffic_penalties)
+        car_blocked = await run_in_threadpool(
+            blocked_penalties_for, plan, mode)
+        if car_blocked:
+            penalties.update(car_blocked)
+        try:
+            response, node_sequence = await _compute_route(
+                app, plan, redis, penalties, lat1, lon1, lat2, lon2,
+                last_mile, mode, need_nodes=need_nodes)
+        except HTTPException as e:
+            logger.info("[VEHICLE] Fallback car juga gagal (%s).", e.detail)
+            response, node_sequence = None, None
+        if response is not None:
+            response.warning = (response.warning or "") + (
+                " Rute mode %s tidak tersedia; memakai rute mobil (car)."
+                % fallback_mode)
+            logger.info("[VEHICLE] Fallback %s -> car berhasil (%.0f m).",
+                        fallback_mode, response.total_distance_meters)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+
+    from app.services.traffic.provider import provider_mode, traffic_enabled
+    final_penalties = penalties
+    if traffic_enabled() and provider_mode() == "smart_hybrid":
+        from app.services.traffic.smart_hybrid import probe_corridor
+        corridor = await probe_corridor(
+            app, redis, response.route_coordinates)
+        if corridor["congested"]:
+            merged = dict(penalties)
+            merged.update(corridor["penalties"])
+            logger.info(
+                "[TRAFFIC] Corridor macet (%d edge), re-route instan.",
+                len(corridor["penalties"]))
+            rerouted = await _compute_route(
+                app, plan, redis, merged, lat1, lon1, lat2, lon2,
+                last_mile, mode, need_nodes=need_nodes)
+            if rerouted is not None and rerouted[0] is not None:
+                response, node_sequence = rerouted
+                final_penalties = merged
+
+    from app.services.traffic.eta import compute_eta, estimated_arrival
+    from app.services.traffic.poller import _reference_graph
+    eta_graph, eta_locations = _reference_graph(app)
+    response.estimated_time_seconds = compute_eta(
+        eta_graph, eta_locations, response.route_coordinates, final_penalties)
+    response.estimated_arrival = estimated_arrival(
+        response.estimated_time_seconds)
+    return response, node_sequence, final_penalties, mode
+
+
 @router.post("/find-route", response_model=RouteResponse)
 async def find_route(payload: RouteRequest, request: Request):
     lat1, lon1 = payload.origin.latitude, payload.origin.longitude
     lat2, lon2 = payload.destination.latitude, payload.destination.longitude
-    raw_mode = payload.mode or os.environ.get("VEHICLE_MODE", "car").strip().lower()
-    mode = raw_mode if raw_mode in ("motorcycle", "car", "truck") else "car"
+    mode = _normalize_mode(payload)
     try:
         plan = await run_in_threadpool(
             _resolve_plan, request.app, lat1, lon1, lat2, lon2)
@@ -376,60 +475,13 @@ async def find_route(payload: RouteRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
 
     redis = getattr(request.app.state, "redis", None)
-    penalties = await get_request_penalties(
+    traffic_penalties = await get_request_penalties(
         request.app, redis, (lat1, lon1), (lat2, lon2))
+    response, _node_sequence, final_penalties, mode = await _best_route(
+        request.app, plan, redis, traffic_penalties, payload, mode,
+        lat1, lon1, lat2, lon2)
 
-    # Vehicle transport mode: blokir edge yang tidak diizinkan untuk mode
-    # kendaraan (motorcycle/car/truck) via penalty inf (lihat docs/feature/
-    # verhicle_transport.md). Penalty digabung dengan penalti traffic.
-    from app.services.pathfinding.vehicle import blocked_penalties_for
-    blocked = await run_in_threadpool(
-        blocked_penalties_for, plan, mode)
-    if blocked:
-        penalties = dict(penalties)
-        penalties.update(blocked)
-
-    last_mile = last_mile_enabled(payload)
-    response, node_sequence = await _compute_route(
-        request.app, plan, redis, penalties, lat1, lon1, lat2, lon2,
-        last_mile, mode)
-    if response is None:
-        raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
-
-    # Bounded corridor sampling: probe TomTom di sepanjang corridor rute
-    # awal; bila macet (ratio > 1.5), update bobot edge di RAM dan re-route
-    # sekali untuk rute paling cepat.
-    from app.services.traffic.provider import provider_mode, traffic_enabled
-    final_penalties = penalties
-    if traffic_enabled() and provider_mode() == "smart_hybrid":
-        from app.services.traffic.smart_hybrid import probe_corridor
-        corridor = await probe_corridor(
-            request.app, redis, response.route_coordinates)
-        if corridor["congested"]:
-            merged = dict(penalties)
-            merged.update(corridor["penalties"])
-            logger.info(
-                "[TRAFFIC] Corridor macet (%d edge), re-route instan.",
-                len(corridor["penalties"]))
-            rerouted = await _compute_route(
-                request.app, plan, redis, merged, lat1, lon1, lat2, lon2,
-                last_mile, mode)
-            if rerouted is not None and rerouted[0] is not None:
-                response, node_sequence = rerouted
-                final_penalties = merged
-
-    # Estimasi waktu tempuh (ETA), dipengaruhi traffic (penalty multiplier).
-    from app.services.traffic.eta import compute_eta, estimated_arrival
-    from app.services.traffic.poller import _reference_graph
-    eta_graph, eta_locations = _reference_graph(request.app)
-    response.estimated_time_seconds = compute_eta(
-        eta_graph, eta_locations, response.route_coordinates, final_penalties)
-    response.estimated_arrival = estimated_arrival(
-        response.estimated_time_seconds)
-
-    # Live tracking + dynamic rerouting: simpan rute aktif agar posisi driver
-    # real-time dapat dibandingkan dan di-reroute otomatis (docs/feature/
-    # dynamic_rerouting.md, live_update_position.md).
+    
     if live_tracking_enabled() or dynamic_rerouting_enabled(payload):
         request.app.state.active_route = {
             "dest": (lat2, lon2),
@@ -437,6 +489,109 @@ async def find_route(payload: RouteRequest, request: Request):
             "plan": plan,
             "penalties": final_penalties,
             "mode": mode,
-            "last_mile": last_mile,
+            "last_mile": last_mile_enabled(payload),
         }
     return response
+
+
+def _route_option(route_id: int, response, node_sequence,
+                  final_penalties, edge_classes,
+                  speed_kmh, incident_delay_minutes,
+                  eta_graph, eta_locations) -> RouteOption:
+    from app.services.traffic.eta import compute_eta, estimated_arrival
+    eta_s = response.estimated_time_seconds
+    if eta_s is None:
+        eta_s = compute_eta(
+            eta_graph, eta_locations, response.route_coordinates,
+            final_penalties)
+        response.estimated_time_seconds = eta_s
+        response.estimated_arrival = estimated_arrival(eta_s)
+    distance_m = _physical_distance(response.route_coordinates)
+    incidents = route_incidents(
+        node_sequence or [], response.route_coordinates,
+        final_penalties, speed_kmh, incident_delay_minutes)
+    return RouteOption(
+        route_id=route_id,
+        is_best=(route_id == 1),
+        summary=route_summary(
+            node_sequence or [], response.route_coordinates, edge_classes),
+        distance_km=round(distance_m / 1000.0, 2),
+        duration_mins=round((eta_s or 0.0) / 60.0, 1),
+        total_distance_meters=round(distance_m, 2),
+        route_coordinates=response.route_coordinates,
+        estimated_time_seconds=eta_s,
+        estimated_arrival=response.estimated_arrival,
+        traffic_segments=_traffic_segments(node_sequence, final_penalties),
+        incidents=incidents,
+    )
+
+
+@router.post("/find-route-options", response_model=RouteOptionsResponse)
+async def find_route_options(payload: RouteRequest, request: Request):
+    lat1, lon1 = payload.origin.latitude, payload.origin.longitude
+    lat2, lon2 = payload.destination.latitude, payload.destination.longitude
+    mode = _normalize_mode(payload)
+    try:
+        plan = await run_in_threadpool(
+            _resolve_plan, request.app, lat1, lon1, lat2, lon2)
+    except AreaNotCoveredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
+
+    redis = getattr(request.app.state, "redis", None)
+    traffic_penalties = await get_request_penalties(
+        request.app, redis, (lat1, lon1), (lat2, lon2))
+
+    best, node_sequence, final_penalties, mode = await _best_route(
+        request.app, plan, redis, traffic_penalties, payload, mode,
+        lat1, lon1, lat2, lon2, need_nodes=True)
+
+    max_routes = max(1, _env_int("ALTERNATIVE_ROUTES_MAX", 3))
+    bump = max(1.0, _env_float("ALTERNATIVE_ROUTE_BUMP", 8.0))
+    overlap_threshold = _env_float("ALTERNATIVE_ROUTE_MAX_OVERLAP", 0.8)
+    incident_delay_minutes = max(0.0, _env_float("INCIDENT_DELAY_MINUTES", 3.0))
+    last_mile = last_mile_enabled(payload)
+
+    from app.services.traffic.eta import eta_config
+    from app.services.traffic.poller import _reference_graph
+    speed_kmh = eta_config()["mode_speed_kmh"]
+    eta_graph, eta_locations = _reference_graph(request.app)
+    edge_classes = merge_edge_classes(plan_graphs(plan))
+
+    def build(route_id, response, ns):
+        return _route_option(
+            route_id, response, ns, final_penalties, edge_classes,
+            speed_kmh, incident_delay_minutes, eta_graph, eta_locations)
+
+    routes = [build(1, best, node_sequence)]
+    accepted_seqs = [node_sequence]
+    used_edge_sets = [route_edges(node_sequence)]
+
+    for route_id in range(2, max_routes + 1):
+        alt_penalties = bump_penalties(final_penalties, used_edge_sets, bump)
+        try:
+            resp, ns = await _compute_route(
+                request.app, plan, redis, alt_penalties,
+                lat1, lon1, lat2, lon2, last_mile, mode, need_nodes=True)
+        except HTTPException:
+            break
+        if resp is None or ns is None:
+            break
+        if any(max_overlap(ns, other) >= overlap_threshold
+               for other in accepted_seqs):
+            break
+        routes.append(build(route_id, resp, ns))
+        accepted_seqs.append(ns)
+        used_edge_sets.append(route_edges(ns))
+
+    total_route = len(routes)
+
+    return RouteOptionsResponse(
+        status="success",
+        total_route=total_route,
+        routes=routes,
+        source=best.source,
+        warning=best.warning,
+        graph_radius_meters=best.graph_radius_meters,
+    )

@@ -30,7 +30,6 @@ class AreaNotCoveredError(ValueError):
 
 
 def _setup_perf_logging():
-    """Pastikan log [PERF] (level INFO) muncul ke stderr."""
     log = logging.getLogger("pathfinding")
     log.setLevel(logging.INFO)
     if not log.handlers:
@@ -74,20 +73,10 @@ _DRIVE_HIGHWAYS = {
     "service", "living_street", "road",
 }
 
-# Tag access yang TIDAK boleh membuang jalan saat parsing (docs/feature/
-# verhicle_transport.md): akses terbatas tetapi tetap bisa dilalui kendaraan.
 _ACCESS_KEEP = {"destination", "permissive", "residential", "yes", "customers"}
 
 
 def _way_kept(tags: dict) -> bool:
-    """Kebijakan access parsing way OSM (permissive / keep-all).
-
-    Semua jalan kendaraan tetap disertakan — termasuk `access=destination`,
-    `access=permissive`, `access=residential`, dan `living_street` — karena
-    jalan akses terbatas di kompleks tetap dibutuhkan agar destinasi di
-    dalamnya terjangkau. Pulau yang terpisah ditangani oleh fallback
-    snapping (connectivity.py), bukan dengan membuang edge di sini.
-    """
     return True
 
 _PG_VERSION = 4
@@ -105,31 +94,21 @@ _LEVEL_HIGHWAYS = {
 }
 
 DEFAULT_REGION_BBOX = (-7.10, 110.25, -6.40, 111.20)
-# Level filter jalan utk graf regional (2 = semua jalan layak kendaraan minus
-# jalan kecil). Level 3 (tol/trunk/primary saja) hanya dipakai rute jarak jauh.
 REGION_LEVEL = int(os.environ.get("OSMNX_REGION_LEVEL", "2"))
 
-# --- Hierarchical routing (lapisan local tile + base graph) ---
-# Local: graf gang (level 1) di sekitar origin/tujuan, dibangun dari TILE
-# (hasil scripts/split_tiles.py) agar tidak scan PBF raksasa per request.
 _TILES_ENABLED = os.environ.get("TILES_ENABLED", "1") == "1"
 _TILES_DIR = os.environ.get("TILES_DIR", os.path.join("data", "tiles"))
 _TILE_DEG = float(os.environ.get("TILE_DEG", "0.2"))
 _TILE_BUFFER_DEG = float(os.environ.get("TILE_BUFFER_DEG", "0.01"))
-# Base: graf jalan utama seluruh Jawa (level 3), dibangun sekali offline,
-# dimuat lazy ke RAM pada request jarak jauh pertama.
 _BASE_GRAPH_ENABLED = os.environ.get("BASE_GRAPH_ENABLED", "1") == "1"
 _BASE_LEVEL = int(os.environ.get("BASE_GRAPH_LEVEL", "3"))
 _LOCAL_RADIUS = int(os.environ.get("LOCAL_RADIUS", "3000"))
 _LOCAL_RADIUS_MAX = int(os.environ.get("LOCAL_RADIUS_MAX", "10000"))
 _HIERARCHICAL_MIN_M = float(os.environ.get("HIERARCHICAL_MIN_KM", "25")) * 1000.0
-# Rute pendek (origin->dest <= batas ini) dirutekan lewat graf gang level-1
-# dari tile (presisi hingga gang), bukan region level-2.
 _LOCAL_ROUTE_MAX_M = float(os.environ.get("LOCAL_ROUTE_MAX_KM", "10")) * 1000.0
 
 
 class _LRUDict(dict):
-    """dict berbatas yang membuang entri terlama saat melampaui maxsize."""
 
     def __init__(self, maxsize: int):
         super().__init__()
@@ -145,7 +124,6 @@ class _LRUDict(dict):
 
 
 def pbf_available() -> bool:
-    """True bila PBF lokal diaktifkan dan ada file di disk."""
     return bool(_USE_LOCAL_PBF and pbfs_available())
 
 
@@ -169,12 +147,6 @@ def _rect_bbox(lat1: float, lon1: float,
 def _pbf_adaptive(lat: float, lon: float, dist_meters: int,
                   origin: tuple | None = None,
                   dest: tuple | None = None) -> tuple:
-    """Tentukan (level, bbox) untuk jalur PBF adaptif.
-
-    Level 1 (<=4 km): bbox persegi di sekitar pusat (rect=None).
-    Level 2/3 (>4 km): bbox persegi panjang origin->dest + padding.
-    Bila origin/dest tidak diketahui, level diambil dari radius saja.
-    """
     if origin is not None and dest is not None:
         dist_m = haversine_distance(origin, dest)
         level = _level_for_distance(dist_m)
@@ -193,7 +165,6 @@ def _select_pbf(origin: tuple | None = None,
                 dest: tuple | None = None,
                 lat: float | None = None,
                 lon: float | None = None) -> PbfEntry | None:
-    """Pilih PBF lokal yang mencakup area, atau None bila nonaktif/tak ada."""
     if not _USE_LOCAL_PBF:
         return None
     if origin is not None and dest is not None:
@@ -208,7 +179,6 @@ def _pbf_load_plan(lat: float, lon: float, dist_meters: int,
                    dest: tuple | None = None,
                    pbf: PbfEntry | None = None,
                    level: int | None = None) -> tuple:
-    """Kembalikan (level, rect, tag). Tag dipakai untuk cache key."""
     if level is None:
         level, rect = _pbf_adaptive(lat, lon, dist_meters, origin, dest)
     elif origin is not None and dest is not None:
@@ -239,8 +209,6 @@ def auto_radius(origin_lat: float, origin_lon: float,
 
 
 def _quantize_radius(dist_meters: int) -> int:
-    """Bulatkan radius ke atas ke kelipatan _RADIUS_BUCKET agar banyak
-    permintaan dengan panjang rute mirip memakai cache graf yang sama."""
     bucket = max(100, _RADIUS_BUCKET)
     q = max(_BASE_RADIUS, dist_meters)
     if q % bucket:
@@ -333,8 +301,6 @@ _saving_keys: set = set()
 
 
 def _save_disk_async(path: str, data, key: tuple) -> None:
-    """Simpan pickle di thread background agar cold-build tidak menunggu
-    serialisasi (bisa 4-5 s). Atomic via _save_disk (tmp+replace)."""
     with _CACHE_LOCK:
         if key in _saving_keys:
             return
@@ -679,12 +645,6 @@ def load_graph_covering(lat1: float, lon1: float,
 def region_graph_cached(lat1: float, lon1: float,
                         lat2: float, lon2: float,
                         level: int | None = None) -> bool:
-    """True bila graf wilayah (level+rect+radius) sudah ada di cache disk.
-
-    Digunakan saat startup agar server tidak melakukan cold-build (scan PBF
-    raksasa) secara sinkron; cukup cek keberadaan pickle disk yang sama
-    dengan yang dipakai load_graph_covering.
-    """
     pbf = _select_pbf((lat1, lon1), (lat2, lon2))
     dist = haversine_distance((lat1, lon1), (lat2, lon2))
     mid_lat = (lat1 + lat2) / 2.0
@@ -696,10 +656,6 @@ def region_graph_cached(lat1: float, lon1: float,
     key = _cache_key(mid_lat, mid_lon, need, tag)
     return os.path.exists(_pg_disk_path(key))
 
-
-# ---------------------------------------------------------------------------
-# Hierarchical routing: lapisan LOCAL (tile) dan BASE (graf utama seluruh Jawa)
-# ---------------------------------------------------------------------------
 
 _tiles_manifest_cache = None
 _tiles_manifest_ready = False
@@ -722,7 +678,6 @@ def _tiles_manifest() -> dict | None:
                 m = json.load(fh)
             if not m.get("pbf_id") or not m.get("stem"):
                 return None
-            # Tile basi bila PBF sumbernya berubah (pbf_id menyandikan nama+mtime).
             current = None
             for entry in discover_pbfs():
                 if entry.stem == m.get("stem"):
@@ -761,7 +716,6 @@ def tiles_contain(lat1: float, lon1: float,
 
 def _tile_files_for_bbox(minlat: float, minlon: float,
                          maxlat: float, maxlon: float) -> list:
-    """Daftar file tile yang menutup bbox (buffer tile ditambahkan di sini)."""
     m = _tiles_manifest()
     if m is None:
         return []
@@ -789,7 +743,6 @@ def _tile_files_for_bbox(minlat: float, minlon: float,
 
 
 def _tile_files_for_point(lat: float, lon: float, radius: int) -> list:
-    """Daftar file tile yang menutup area (radius) di sekitar titik."""
     minlon, minlat, maxlon, maxlat = _pbf_bbox(lat, lon, radius)
     return _tile_files_for_bbox(minlat, minlon, maxlat, maxlon)
 
@@ -821,7 +774,6 @@ def _scan_tiles(tiles: list, bbox: tuple, level: int = 1):
 
 
 def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
-    """Baca graf jalan (level 1 = semua _DRIVE_HIGHWAYS) dari tile terdekat."""
     tiles = _tile_files_for_point(lat, lon, radius)
     if not tiles:
         raise AreaNotCoveredError(
@@ -842,7 +794,6 @@ def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
 def load_local_graph_point(lat: float, lon: float,
                            radius: int = _LOCAL_RADIUS,
                            level: int = 1) -> PathGraph:
-    """PathGraph lokal (gang) dari tile di sekitar titik, dicache disk+RAM."""
     if not _TILES_ENABLED:
         raise AreaNotCoveredError(
             "Tile lokal dinonaktifkan (TILES_ENABLED=0).")
@@ -887,11 +838,6 @@ def load_local_graph_point(lat: float, lon: float,
 def load_local_graph_covering(lat1: float, lon1: float,
                               lat2: float, lon2: float,
                               level: int = 1) -> PathGraph:
-    """PathGraph level-1 (gang) dari tile yang menutupi origin->dest.
-
-    Dipakai rute pendek (<= LOCAL_ROUTE_MAX_KM) agar presisi hingga gang,
-    tanpa scan PBF raksasa: cukup tile yang menutup bbox rute.
-    """
     if not _TILES_ENABLED:
         raise AreaNotCoveredError(
             "Tile lokal dinonaktifkan (TILES_ENABLED=0).")
@@ -902,24 +848,16 @@ def load_local_graph_covering(lat1: float, lon1: float,
     m = _tiles_manifest()
     pad_deg = _COVER_PAD_M / 111320.0
     rect = _rect_bbox(lat1, lon1, lat2, lon2, pad_deg)
-    # Kuantisasi rect ke grid kasar (_COVER_GRID) agar pasangan titik yang
-    # berdekatan berbagi satu graf penutup (reuse cache per area).
     rect = tuple(_snap_cover(v) for v in rect)
     minlon, minlat, maxlon, maxlat = rect
-    # Filter node diperluas sebesar buffer tile agar way yang melintasi batas
-    # rect ikut tersambung (mengurangi graf penutup yang terputus-putus).
     buf = m.get("buffer_deg", _TILE_BUFFER_DEG)
     load_rect = (rect[0] - buf, rect[1] - buf,
                  rect[2] + buf, rect[3] + buf)
     tag = _adaptive_tag(level, rect, m["pbf_id"], grid=_COVER_GRID)
-    # Semua pasangan dalam satu rect terkuantisasi berbagi key yang sama:
-    # pusat rect + radius pusat->pojok (deterministik per rect), sehingga
-    # satu cold-build melayani banyak rute di area yang sama.
     mid_lat = (minlat + maxlat) / 2.0
     mid_lon = (minlon + maxlon) / 2.0
     radius = int(
         haversine_distance((mid_lat, mid_lon), (maxlat, maxlon))) + 1000
-    # Bulatkan radius ke kelipatan 500 m agar stabil terhadap jitter float.
     radius = int(round(radius / 500.0) * 500.0)
     key = _cache_key(mid_lat, mid_lon, radius, tag)
     mid_lat, mid_lon = key[0], key[1]
@@ -956,9 +894,6 @@ def load_local_graph_covering(lat1: float, lon1: float,
             "Tidak ada data jalan di tile sekitar area yang diminta.")
 
     t_build = perf_counter()
-    # Covering dipakai langsung lewat Rust A* (engine_route); landmark+CH
-    # tidak diperlukan -> build cepat & pickle kecil. Fallback Python tetap
-    # aman (shortest_path jatuh ke A* biasa bila landmark kosong).
     pg = build_path_graph(graph, locations, mid_lat, mid_lon,
                           landmarks_k=0, enable_ch=False,
                           edge_classes=edge_classes)
@@ -974,8 +909,6 @@ def load_local_graph_covering(lat1: float, lon1: float,
     return pg
 
 
-# --- Base graph (jalan utama seluruh Jawa, level 3) ---
-
 _base_lock = threading.Lock()
 _base_pg: PathGraph | None = None
 
@@ -983,7 +916,7 @@ _base_pg: PathGraph | None = None
 def base_pickle_path() -> str | None:
     """Lokasi pickle base graph bila ada (cocok dgn PBF aktif)."""
     suffix = "_l%d.pkl" % _BASE_LEVEL
-    prefix = "base_v3_"
+    prefix = "base_v4_"
     try:
         names = [n for n in os.listdir(_DISK_CACHE_DIR)
                  if n.startswith(prefix) and n.endswith(suffix)]
@@ -1005,7 +938,6 @@ def base_available() -> bool:
 
 def hierarchical_available(lat1: float, lon1: float,
                            lat2: float, lon2: float) -> bool:
-    """True bila lapisan hierarchical (tile+base) siap utk pasangan O->D."""
     if not tiles_enabled() or not base_available():
         return False
     m = _tiles_manifest()
@@ -1030,7 +962,6 @@ def base_bbox() -> tuple | None:
 
 
 def load_base_graph() -> PathGraph:
-    """Muat base graph (lazy, thread-safe). Dipanggil dari threadpool."""
     global _base_pg
     if _base_pg is not None:
         return _base_pg
@@ -1061,8 +992,6 @@ _CUSTOM_DRIVE_FILTER = '["highway"~"^(%s)$"]["area"!~"yes"]' % (
 
 def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):
     _configure_osmnx(ox, radius_timeout(dist_meters))
-    # custom_filter menyertakan semua kelas jalan kendaraan TANPA filter access
-    # bawaan osmnx (yang bisa membuang access=destination/permissive/dll).
     try:
         G = ox.graph_from_point((lat, lon), dist=dist_meters,
                                 network_type=None,
@@ -1134,13 +1063,12 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
     return graph, locations, edge_classes
 
 
-_LOC_BUCKET = 1.0 / 1000.0  # 0.001 deg (~111 m) per sel index
+_LOC_BUCKET = 1.0 / 1000.0
 
 _loc_index_cache: dict = {}
 
 
 def _loc_index(locations: dict):
-    """Index grid (bucket ~0.001 deg) per dict lokasi, cache by id+len."""
     key = id(locations)
     entry = _loc_index_cache.get(key)
     if entry is not None and entry[0] == len(locations):
@@ -1164,8 +1092,6 @@ def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
     scale = int(round(1.0 / _LOC_BUCKET))
     bc = (int(round(lat * scale)), int(round(lon * scale)))
     idx = _loc_index(locations)
-    # Cari ring demi ring (kotak membesar); berhenti saat batas ring >= jarak
-    # kandidat terbaik (node di ring lebih jauh tak mungkin lebih dekat).
     for r in range(0, 512):
         found_any = False
         for c in range(bc[1] - r, bc[1] + r + 1):

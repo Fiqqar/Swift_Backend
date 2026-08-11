@@ -23,7 +23,6 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def eta_config() -> dict:
-    """Konfigurasi ETA dari env (lihat docs/feature/eta.md)."""
     default_speed = _env_float("DEFAULT_SPEED_KMH", 40.0)
     mode_speed = _env_float("MODE_AVG_SPEED_KMH", default_speed)
     if mode_speed <= 0:
@@ -38,14 +37,12 @@ def eta_config() -> dict:
 
 
 def _turn_count(coords: list) -> int:
-    """Jumlah belokan tajam (sudut antar segmen > ambang derajat)."""
     if not coords or len(coords) < 3:
         return 0
     angle_deg = eta_config()["turn_angle_deg"]
     if angle_deg <= 0:
         return 0
     count = 0
-    # heading segmen dalam derajat (0 = timur, berlawanan jarum jam)
     prev_bearing = None
     for i in range(len(coords) - 1):
         lat1, lon1 = coords[i][0], coords[i][1]
@@ -68,18 +65,6 @@ def _turn_count(coords: list) -> int:
 
 def compute_eta(graph: dict, locations: dict,
                 coords: list, penalties: dict | None = None) -> float | None:
-    """Estimasi waktu tempuh (detik) sesuai docs/feature/eta.md.
-
-    - ENABLE_CUSTOM_ETA=False (default): pure travel time = jarak / kecepatan
-      standar jalan (DEFAULT_SPEED_KMH).
-    - ENABLE_CUSTOM_ETA=True:
-        ETA = (jarak / kecepatan rata-rata moda) * traffic_multiplier
-              + SERVICE_TIME_MINUTES*60 + belokan_tajam * TURN_PENALTY_SECONDS
-
-    traffic_multiplier diambil dari rata-rata penalty (>1) pada edge yang
-    dilalui rute (proyeksi polyline rute ke graf). Tanpa data traffic -> 1.0.
-    Kembalikan None bila tidak dapat dihitung (jarak/kecepatan tak valid).
-    """
     if not coords or len(coords) < 2:
         return None
     cfg = eta_config()
@@ -118,10 +103,6 @@ def compute_eta(graph: dict, locations: dict,
 
 def estimated_arrival(eta_seconds: float | None,
                       now: datetime | None = None) -> datetime | None:
-    """Perkiraan waktu tiba (UTC, timezone-aware) = now + eta_seconds.
-
-    Kembalikan None bila eta_seconds tidak valid (kosong / bukan angka).
-    """
     if eta_seconds is None:
         return None
     base = now if now is not None else datetime.now(timezone.utc)

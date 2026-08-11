@@ -56,3 +56,34 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 #log { min-height: 40px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0d1b26; color: #7ff59b; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .leaflet-container { font: inherit; }
 .leaflet-popup-content { font-size: 13px; font-weight: 600; color: #1f2933; margin: 10px 14px; }
+.route-info-popup .leaflet-popup-content { font-size: 12px; margin: 8px 12px; line-height: 1.4; }
+
+/* --- Bottom sheet pilihan rute ---------------------------------------- */
+#route-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 700; display: none; flex-direction: column; background: #fff; border-top: 1px solid #d7dde3; box-shadow: 0 -6px 20px rgba(15, 42, 67, .18); border-radius: 14px 14px 0 0; padding: 10px 14px 12px; max-height: 46%; overflow-y: auto; }
+#route-sheet.show { display: flex; }
+#route-sheet .sheet-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+#route-sheet .sheet-header span { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #5b6b7b; }
+#route-sheet .sheet-close { border: 0; background: #e7ebef; color: #1f2933; width: 26px; height: 26px; border-radius: 50%; font-size: 16px; line-height: 1; cursor: pointer; }
+#route-sheet .sheet-close:hover { background: #d7dde3; }
+.sheet-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1.5px solid #d7dde3; border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: #fff; transition: border-color .15s, background .15s; }
+.sheet-card:hover { background: #f4f7fa; }
+.sheet-card.selected { border-color: #0f6dc1; background: #eaf4ff; }
+.sheet-card .swatch { width: 6px; align-self: stretch; border-radius: 3px; flex: 0 0 auto; }
+.sheet-card .swatch.best { background: #0f6dc1; }
+.sheet-card .swatch.alt { background: #8b9aab; }
+.sheet-card .card-main { flex: 1; min-width: 0; }
+.sheet-card .card-title { font-size: 13px; font-weight: 700; color: #1f2933; }
+.sheet-card .card-title .best-tag { margin-left: 6px; font-size: 10px; font-weight: 700; color: #0f6dc1; background: #dcecfc; padding: 1px 6px; border-radius: 999px; }
+.sheet-card .card-sub { font-size: 12px; color: #5b6b7b; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-card .card-meta { font-size: 12px; color: #334e6b; font-weight: 600; text-align: right; flex: 0 0 auto; }
+.sheet-card .card-meta .delta { display: block; font-size: 11px; color: #b7791f; font-weight: 600; }
+.sheet-card .incident-badge { margin-left: 6px; font-size: 10px; font-weight: 700; color: #fff; background: #d81b1b; padding: 1px 6px; border-radius: 999px; }
+
+/* --- Toast insiden ---------------------------------------------------- */
+#toasts { position: fixed; top: 12px; right: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; width: min(340px, calc(100vw - 24px)); }
+.toast { padding: 10px 12px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #1f2933; background: #fff; border-left: 5px solid #0f6dc1; box-shadow: 0 4px 14px rgba(15, 42, 67, .18); animation: toast-in .2s ease-out; }
+.toast.warn { border-left-color: #f4c20d; }
+.toast.danger { border-left-color: #d81b1b; }
+.toast .toast-title { font-weight: 700; }
+.toast .toast-sub { font-weight: 500; color: #5b6b7b; margin-top: 2px; }
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

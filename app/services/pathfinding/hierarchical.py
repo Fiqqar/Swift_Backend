@@ -1,18 +1,3 @@
-"""Hierarchical routing 3 lapisan (Gmaps-style):
-
-    local(origin, gang) -> base(jalan utama) -> local(dest, gang)
-
-Lapisan local memakai graf level-1 dari tile (semua _DRIVE_HIGHWAYS, presisi
-hingga gang). Lapisan base memakai graf jalan utama seluruh Jawa (level 3)
-yang dimuat lazy. Penyatuan antar lapisan dilakukan lewat node ID OSM yang
-global (portal = node yang ada di local DAN base).
-
-Rute dihitung sebagai:
-  Dijkstra origin -> portalA (di localA)
-  + A*/bidirectional di base portalA -> portalB
-  + Dijkstra portalB -> dest (di localB)
-"""
-
 import heapq
 import logging
 import math
@@ -20,7 +5,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from app.services.pathfinding.connectivity import nearest_node_reaching
+from app.services.pathfinding.connectivity import (
+    nearest_node_reaching,
+    resolve_goal,
+)
 from app.services.pathfinding.core_a_star import (
     edge_id,
     haversine_distance,
@@ -41,7 +29,6 @@ logger = logging.getLogger("pathfinding")
 _MAX_SNAP_DIST = float(os.environ.get("MAX_SNAP_DIST", "1500"))
 _MAX_PAIR_PRODUCT = 100000
 _GROWTH_FACTOR = 1.5
-# Bangun graf local origin & tujuan secara paralel (pyosmium lepas GIL).
 _PARALLEL_LOCAL = os.environ.get("HIER_PARALLEL_LOCAL", "1") == "1"
 
 
@@ -64,11 +51,6 @@ class HierarchicalResult:
 
 
 def _local_with_portal(lat: float, lon: float, base_ids: set, warnings: list):
-    """PathGraph lokal di sekitar titik + portal ke base.
-
-    Radius diperbesar bertahap sampai ada portal (jalan utama) dalam jangkauan.
-    Bila tetap kosong, catat fallback: titik di-snap langsung ke base.
-    """
     radius = _LOCAL_RADIUS
     pg = load_local_graph_point(lat, lon, radius, level=1)
     portal = set(pg.graph) & base_ids
@@ -86,7 +68,6 @@ def _local_with_portal(lat: float, lon: float, base_ids: set, warnings: list):
 
 def build_hierarchical(lat1: float, lon1: float,
                        lat2: float, lon2: float) -> HierarchicalResult:
-    """Siapkan lapisan localA/base/localB + portal untuk pasangan O->D."""
     base = load_base_graph()
     base_ids = set(base.graph)
     warnings: list = []
@@ -120,7 +101,6 @@ def build_hierarchical(lat1: float, lon1: float,
 
 
 def _dijkstra(graph: dict, source: int, penalties: dict | None = None):
-    """Dijkstra penuh dari source. Kembalikan (dist, parent)."""
     dist = {source: 0.0}
     parent = {}
     heap = [(0.0, source)]
@@ -150,7 +130,6 @@ def _reverse_graph(graph: dict) -> dict:
 
 
 def _blocked_edges(penalties: dict | None) -> set:
-    """Edge yang diblokir penuh (penalty inf, mis. filter mode kendaraan)."""
     if not penalties:
         return set()
     return {eid for eid, mult in penalties.items() if mult == float("inf")}
@@ -169,7 +148,6 @@ def _reconstruct(parent: dict, start: int, goal: int) -> list:
 
 
 def _reconstruct_rev(parent: dict, start: int, goal: int) -> list:
-    """Path start->goal dari parent hasil Dijkstra pada graf terbalik."""
     path = [start]
     n = start
     guard = 0
@@ -182,7 +160,6 @@ def _reconstruct_rev(parent: dict, start: int, goal: int) -> list:
 
 def _best_pair(portal_a: list, portal_b: list, dist_a: dict, dist_b: dict,
                locations: dict):
-    """Pilih (portalA, portalB) yang meminimalkan perkiraan total biaya."""
     if len(portal_a) * len(portal_b) > _MAX_PAIR_PRODUCT:
         portal_a = sorted(portal_a, key=lambda p: dist_a[p])[:64]
         portal_b = sorted(portal_b, key=lambda p: dist_b[p])[:64]
@@ -202,19 +179,6 @@ def _best_pair(portal_a: list, portal_b: list, dist_a: dict, dist_b: dict,
 def route_hierarchical(result: HierarchicalResult,
                        penalties: dict | None = None,
                        last_mile: bool = True):
-    """Hitung rute 3 lapisan.
-
-    Kembalikan (coords, total_dist, source, warning, node_sequence).
-    node_sequence = node id OSM per titik route_coordinates (sebelum proyeksi
-    ujung) untuk pemetaan traffic/edge.
-
-    Bila graf lokal terpecah (portal ada di graf tapi tidak terjangkau dari
-    titik snap), ujung tsb dicarikan node alternatif terdekat yang masih
-    terhubung ke portal; bila tidak ada, di-degrade ke snap jalan utama
-    (base) — bukan error.
-    Saat last_mile=False, ujung rute tetap pada node graf (tanpa proyeksi
-    tegak lurus ke pinggir segmen jalan).
-    """
     base = result.base
     base_locations = base.locations
     origin = result.origin
@@ -231,7 +195,6 @@ def route_hierarchical(result: HierarchicalResult,
 
     blocked_edges = _blocked_edges(penalties)
 
-    # --- Snap origin & dest ----------------------------------------------
     start_a = _snap(result.local_origin.locations, origin[0], origin[1]) \
         if result.portal_origin else None
     goal_b = _snap(result.local_dest.locations, dest[0], dest[1]) \
@@ -243,7 +206,6 @@ def route_hierarchical(result: HierarchicalResult,
              result.local_dest.locations, result.local_dest.graph,
              result.local_dest.edge_classes)
 
-    # --- Dijkstra lokal origin & dest (paralel) ---------------------------
     def _dijk_a():
         if start_a is not None:
             return _dijkstra(result.local_origin.graph, start_a, penalties)
@@ -263,7 +225,6 @@ def route_hierarchical(result: HierarchicalResult,
     else:
         d_a, d_b = _dijk_a(), _dijk_b()
 
-    # --- Reachability portal; fallback node alternatif, lalu degrade ke base -
     if start_a is not None:
         dist_a, parent_a = d_a
         cand_a = [pa for pa in result.portal_origin if pa in dist_a]
@@ -364,7 +325,6 @@ def route_hierarchical(result: HierarchicalResult,
         dist_b, parent_b = {goal_b: 0.0}, {}
         portal_b, local_b = [goal_b], False
 
-    # --- Pilih portal & rute tengah di base ------------------------------
     if local_a and local_b:
         pair = _best_pair(portal_a, portal_b, dist_a, dist_b, base_locations)
         if pair is None:
@@ -375,10 +335,39 @@ def route_hierarchical(result: HierarchicalResult,
         pb = min(portal_b, key=lambda p: dist_b[p])
 
     path_mid, cost_mid = engine_route(base, pa, pb, penalties)
-    if not path_mid:
-        raise AreaNotCoveredError("Rute tengah tidak ditemukan")
 
-    # --- Rekonstruksi path lokal -----------------------------------------
+    if not path_mid:
+        blocked_edges = _blocked_edges(penalties)
+        alt_b, alt_dist, _ = resolve_goal(
+            base.graph, base_locations, pa, dest, goal_b,
+            blocked_edge_ids=blocked_edges, k=16,
+            max_dist=_MAX_SNAP_DIST)
+        if alt_b is not None and alt_b != goal_b:
+            goal_b = alt_b
+            pb = alt_b
+            dist_b, parent_b = {pb: 0.0}, {}
+            portal_b, local_b = [pb], False
+            warnings.append(
+                "Destinasi disesuaikan ke jalan utama terhubung "
+                "(%.0f m dari titik)" % alt_dist)
+            path_mid, cost_mid = engine_route(base, pa, pb, penalties)
+        if not path_mid:
+            alt_a, alt_dist, _ = resolve_goal(
+                base.graph, base_locations, pb, origin, start_a,
+                blocked_edge_ids=blocked_edges, k=16,
+                max_dist=_MAX_SNAP_DIST)
+            if alt_a is not None and alt_a != start_a:
+                start_a = alt_a
+                pa = alt_a
+                dist_a, parent_a = {pa: 0.0}, {}
+                portal_a, local_a = [pa], False
+                warnings.append(
+                    "Origin disesuaikan ke jalan utama terhubung "
+                    "(%.0f m dari titik)" % alt_dist)
+                path_mid, cost_mid = engine_route(base, pa, pb, penalties)
+        if not path_mid:
+            raise AreaNotCoveredError("Rute tengah tidak ditemukan")
+
     if local_a:
         path_a = _reconstruct(parent_a, start_a, pa)
         coords_a = [result.local_origin.locations[n] for n in path_a] # type: ignore
@@ -392,7 +381,6 @@ def route_hierarchical(result: HierarchicalResult,
         path_b = [pb]
         coords_b = []
 
-    # --- Koordinat + total -------------------------------------------------
     coords = coords_a
     for nid in path_mid[1:]:
         coords.append(base_locations[nid])
@@ -401,8 +389,6 @@ def route_hierarchical(result: HierarchicalResult,
 
     total = dist_a[pa] + cost_mid + dist_b[pb]
 
-    # Presisi ujung: proyeksikan origin & destination ke ruas jalan terdekat
-    # (bukan hanya node terdekat) agar koordinat akhir menempel pada jalan.
     origin_graph = result.local_origin.graph if local_a else base.graph
     origin_locs = result.local_origin.locations if local_a else base_locations
     dest_graph = result.local_dest.graph if local_b else base.graph

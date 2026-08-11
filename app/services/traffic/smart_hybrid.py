@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import math
@@ -19,8 +20,9 @@ logger = logging.getLogger("pathfinding")
 OD_KEY_PREFIX = "traffic:od:"
 CORRIDOR_KEY_PREFIX = "traffic:corridor:"
 
-# Cache index node base graph per objek graf.
 _NODE_INDEX_CACHE: dict[int, tuple] = {}
+
+_CORRIDOR_MAX_CONCURRENT = 5
 
 
 def _probe_radius_km() -> float:
@@ -37,11 +39,27 @@ def _od_ttl() -> int:
         return 300
 
 
-def _corridor_samples() -> int:
+def _corridor_sample_km() -> float:
     try:
-        return max(3, min(5, int(os.environ.get("TOMTOM_CORRIDOR_SAMPLES", "4"))))
+        return max(5.0, float(os.environ.get("TOMTOM_CORRIDOR_SAMPLE_KM", "40")))
     except ValueError:
-        return 4
+        return 40.0
+
+
+def _corridor_max_samples() -> int:
+    try:
+        return max(3, int(os.environ.get("TOMTOM_CORRIDOR_MAX_SAMPLES", "20")))
+    except ValueError:
+        return 20
+
+
+def _corridor_sample_count(route_coordinates: list) -> int:
+    total_km = 0.0
+    for i in range(1, len(route_coordinates)):
+        total_km += haversine_distance(
+            route_coordinates[i - 1], route_coordinates[i]) / 1000.0
+    n = int(math.ceil(total_km / _corridor_sample_km()))
+    return max(3, min(_corridor_max_samples(), n))
 
 
 def _congestion_ratio() -> float:
@@ -52,18 +70,12 @@ def _congestion_ratio() -> float:
 
 
 def _grid_key(lat: float, lon: float) -> str:
-    """Sel grid ~500m: round lat ke 0.0045 deg (~500m), lon ikut cos.
-
-    Satu grid = area cache; request pada grid yang sama dalam TTL tidak
-    memanggil TomTom lagi.
-    """
     dlat = 0.0045
     dlon = dlat / max(0.1, math.cos(math.radians(lat)))
     return "%d,%d" % (math.floor(lat / dlat), math.floor(lon / dlon))
 
 
 def _node_index(graph: dict, locations: dict):
-    """Index spasial node (Point) dari graf; di-cache per objek graf."""
     key = id(graph)
     cached = _NODE_INDEX_CACHE.get(key)
     if cached is not None:
@@ -84,12 +96,6 @@ def _node_index(graph: dict, locations: dict):
 def _select_probe_points(graph: dict, locations: dict,
                          lat: float, lon: float,
                          max_points: int = 2) -> list[tuple[float, float]]:
-    """Pilih s.d. max_points node arteri base-graph dalam radius O/D.
-
-    Node diurutkan dari yang terdekat ke titik. Bila tak ada node dalam
-    radius, fallback ke koordinat O/D itu sendiri (TomTom tetap dipanggil,
-    snap_segment yang memutuskan apakah ada edge terpengaruh).
-    """
     radius_m = _probe_radius_km() * 1000.0
     tree, ids = _node_index(graph, locations)
     if tree is None:
@@ -111,12 +117,6 @@ def _select_probe_points(graph: dict, locations: dict,
 
 
 def _sample_route_points(coords: list, n: int) -> list[tuple[float, float]]:
-    """Ambil n titik sampel merata di sepanjang polyline rute (interior).
-
-    Titik diambil pada fraksi k/(n+1) dari total panjang rute (k = 1..n),
-    jadi ujung origin & destination tidak ikut disampel (sudah di-probe O/D).
-    Kembalikan [] bila rute terlalu pendek (< 2 koordinat).
-    """
     if not coords or len(coords) < 2:
         return []
     n = max(0, min(5, n))
@@ -133,7 +133,6 @@ def _sample_route_points(coords: list, n: int) -> list[tuple[float, float]]:
     samples = []
     for k in range(1, n + 1):
         target = total * k / (n + 1)
-        # cari segmen yang memuat target
         for i in range(1, len(cum)):
             if cum[i] >= target:
                 seg_len = cum[i] - cum[i - 1]
@@ -168,7 +167,6 @@ async def _redis_set_json(redis, key: str, data: dict, ttl: int) -> None:
 
 
 async def _base_graph(app):
-    """Graf rujukan untuk probe point & snap segmen (level-3 / arteri)."""
     pg = (getattr(app.state, "region_graph", None)
           or getattr(app.state, "path_graph", None))
     if pg is not None and getattr(pg, "graph", None):
@@ -187,12 +185,6 @@ async def _base_graph(app):
 
 
 async def load_cached_penalties(redis) -> dict[int, float]:
-    """Agregasi semua penalti TomTom tersimpan: traffic:od:* & traffic:corridor:*.
-
-    Setiap nilai key adalah JSON {str(edge_id): weight}. Hasilnya dipakai
-    untuk overlay /traffic/map dan hitungan /traffic/status (area yang
-    pernah di-request, bertahan selama TTL).
-    """
     if redis is None:
         return {}
     penalties: dict[int, float] = {}
@@ -216,17 +208,6 @@ async def load_cached_penalties(redis) -> dict[int, float]:
 
 async def probe_corridor(app, redis,
                          route_coordinates: list) -> dict:
-    """Probe TomTom di sepanjang corridor rute awal (mid-route sampling).
-
-    1. Ambil 3-5 titik sampel merata di polyline rute (interior).
-    2. Snap tiap titik ke node arteri base-graph, lalu query TomTom Flow
-       (cache per grid traffic:corridor:*, TTL TRAFFIC_REDIS_TTL_SECONDS).
-    3. Kembalikan {"penalties": {edge_id: weight}, "congested": bool}.
-       congested = True bila ada weight > TOMTOM_CONGESTION_RATIO (1.5).
-
-    Bobot corridor hanya berlaku di RAM request ini (tidak ditulis ke hash
-    global traffic:penalties); cache Redis hanya menyimpan hasil per grid.
-    """
     if not traffic_enabled() or provider_mode() != "smart_hybrid":
         return {"penalties": {}, "congested": False}
     base = await _base_graph(app)
@@ -237,24 +218,38 @@ async def probe_corridor(app, redis,
     provider = TomTomProvider()
     ratio = _congestion_ratio()
 
-    samples = _sample_route_points(route_coordinates, _corridor_samples())
+    samples = _sample_route_points(
+        route_coordinates, _corridor_sample_count(route_coordinates))
     penalties: dict[int, float] = {}
     filled: set[int] = set()
     congested = False
+
+    probe_points = []
     for lat, lon in samples:
-        probe_points = _select_probe_points(graph, locations, lat, lon,
-                                            max_points=1)
-        grid = _grid_key(*probe_points[0])
-        key = CORRIDOR_KEY_PREFIX + grid
+        pts = _select_probe_points(graph, locations, lat, lon, max_points=1)
+        probe_points.append(pts[0])
+
+    _corridor_sem = asyncio.Semaphore(_CORRIDOR_MAX_CONCURRENT)
+
+    async def _probe_grid(idx: int) -> dict:
+        p = probe_points[idx]
+        key = CORRIDOR_KEY_PREFIX + _grid_key(*p)
         cached = await _redis_get_json(redis, key)
-        if cached is None:
-            events = await provider.fetch_points(probe_points)
-            cached = {}
-            for event in events:
-                for edge in snap_segment(
-                        graph, locations, event.coordinates, tolerance):
-                    cached[str(edge)] = event.weight
-            await _redis_set_json(redis, key, cached, ttl=_od_ttl())
+        if cached is not None:
+            return cached
+        async with _corridor_sem:
+            events = await provider.fetch_points([p])
+        cached = {}
+        for event in events:
+            for edge in snap_segment(
+                    graph, locations, event.coordinates, tolerance):
+                cached[str(edge)] = event.weight
+        await _redis_set_json(redis, key, cached, ttl=_od_ttl())
+        return cached
+
+    grid_caches = await asyncio.gather(
+        *[_probe_grid(i) for i in range(len(probe_points))])
+    for cached in grid_caches:
         for edge_str, weight in cached.items():
             edge = int(edge_str)
             if edge in filled:
@@ -270,13 +265,6 @@ async def probe_corridor(app, redis,
 async def get_request_penalties(app, redis,
                                 origin: tuple[float, float],
                                 dest: tuple[float, float]) -> dict[int, float]:
-    """Penalti lalu lintas untuk satu request find_route.
-
-    - traffic off                     -> {} (bobot standar, tanpa API/Redis)
-    - internal_only / full_tomtom     -> load_penalties(redis) (poller global)
-    - smart_hybrid                    -> penalti global (internal poller) yang
-      di-overlay TomTom on-demand di area O & D (cache grid, TTL).
-    """
     if not traffic_enabled():
         return {}
     mode = provider_mode()

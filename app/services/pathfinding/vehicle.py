@@ -1,10 +1,6 @@
-"""Vehicle transport mode: blokir edge yang tidak diizinkan per mode.
+import logging
 
-Mode kendaraan (motorcycle/car/truck) memetakan tag highway OSM
-(`edge_classes` pada PathGraph) ke set kelas jalan yang diizinkan. Edge
-yang tidak diizinkan diberi penalty inf sehingga routing engine
-menghindarinya. Lihat docs/feature/verhicle_transport.md.
-"""
+logger = logging.getLogger("pathfinding.vehicle")
 
 _MOTORCYCLE = {
     "trunk", "trunk_link", "primary", "primary_link",
@@ -22,6 +18,7 @@ _CAR = {
 _TRUCK = {
     "motorway", "motorway_link", "trunk", "trunk_link",
     "primary", "primary_link",
+    "secondary", "secondary_link", "tertiary", "tertiary_link",
 }
 
 _ALLOWED_BY_MODE = {
@@ -35,14 +32,21 @@ def _pg_edge_classes(pg) -> dict:
     return getattr(pg, "edge_classes", None) or {}
 
 
-def blocked_penalties_for(plan, mode: str) -> dict:
-    """Kembalikan {edge_id: inf} untuk edge yang dilarang mode `mode`.
+def _log_stale_graph(pg, logger) -> None:
+    try:
+        if _pg_edge_classes(pg):
+            return
+        source = getattr(pg, "source", "?")
+        if logger.isEnabledFor(logging.WARNING):
+            logger.warning(
+                "[vehicle] graf tanpa edge_classes (mode tidak tersaring), "
+                "source=%s. Rebuild dengan scripts/build_base_graph.py.",
+                source)
+    except Exception:
+        pass
 
-    `plan` adalah hasil `_resolve_plan`: ("graph", PathGraph) atau
-    ("hierarchical", HierarchicalResult). Mode tak dikenal diperlakukan
-    sebagai "car" (tanpa blokir). Edge tanpa info kelas jalan tidak
-    diblokir agar graf tetap tersambung.
-    """
+
+def blocked_penalties_for(plan, mode: str) -> dict:
     allowed = _ALLOWED_BY_MODE.get(mode, _CAR)
 
     if plan[0] == "hierarchical":
@@ -54,6 +58,7 @@ def blocked_penalties_for(plan, mode: str) -> dict:
     for pg in graphs:
         edge_classes = _pg_edge_classes(pg)
         if not edge_classes:
+            _log_stale_graph(pg, logger)
             continue
         for eid, cls in edge_classes.items():
             if cls not in allowed:

@@ -1,14 +1,3 @@
-"""Registry of local .osm.pbf files.
-
-Setiap file PBF regional (java, sumatera, sulawesi, dst) dideteksi otomatis
-dari direktori PBF_DIR (default: data/pbf). Bounding box wilayah dibaca dari
-header file PBF via pyosmium (murah), dipakai untuk memilih PBF yang tepat
-per-request dan untuk identitas cache (pbf_id).
-
-pbf_id menyandikan nama file + mtime + ukuran sehingga mengganti/memperbarui
-file PBF otomatis membatalkan cache lama yang tersimpan di disk.
-"""
-
 import logging
 import math
 import os
@@ -66,7 +55,6 @@ def pbf_dir() -> str:
 
 
 def _read_header_box(path: str) -> tuple | None:
-    """Baca bbox (minlon, minlat, maxlon, maxlat) dari header file PBF."""
     from osmium import apply as osmium_apply
     from osmium import io as osmium_io
 
@@ -85,7 +73,6 @@ def _read_header_box(path: str) -> tuple | None:
 
 
 def _scan_bbox(path: str) -> tuple | None:
-    """Fallback: hitung bbox dengan memindai seluruh node (lambat)."""
     import osmium
     from osmium import io as osmium_io
 
@@ -114,7 +101,6 @@ def _scan_bbox(path: str) -> tuple | None:
 
 
 def _file_signature(pbf_dir_path: str) -> tuple:
-    """Tuple (name, size, mtime_ns) semua *.osm.pbf di direktori."""
     try:
         entries = []
         for name in os.listdir(pbf_dir_path):
@@ -133,7 +119,6 @@ _registry_signature = None
 
 
 def discover_pbfs() -> list:
-    """Daftar PbfEntry terurut. Re-index hanya bila daftar file berubah."""
     global _registry_cache, _registry_signature
     directory = pbf_dir()
     sig = _file_signature(directory)
@@ -171,7 +156,6 @@ def discover_pbfs() -> list:
 
 
 def refresh_registry() -> list:
-    """Paksa re-index registry (mis. setelah file PBF baru ditambahkan)."""
     global _registry_cache, _registry_signature
     with _registry_lock:
         _registry_cache = None

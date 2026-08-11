@@ -35,7 +35,7 @@ SessionLocal = async_sessionmaker(
 
 
 async def init_db() -> None:
-    import app.models.route_history  # noqa: F401  (register tabel ke metadata)
+    import app.models.route_history
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

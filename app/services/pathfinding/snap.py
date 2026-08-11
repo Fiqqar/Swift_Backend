@@ -1,11 +1,3 @@
-"""Bantuan snapping: node terdekat, kelas jalan di sekitar node, dan proyeksi
-titik ke segmen jalan terdekat.
-
-Semua fungsi murni geometri (Haversine/segmen) dan tidak bergantung pada
-kelas jalan maupun filter access sehingga snapping selalu memprioritaskan
-jarak terdekat dari koordinat asli.
-"""
-
 import math
 
 from app.services.pathfinding.core_a_star import (
@@ -31,10 +23,6 @@ def _grid_index(locations: dict) -> dict:
 
 def k_nearest_nodes(lat: float, lon: float, locations: dict,
                     k: int = 8, max_dist: float = 800.0) -> list:
-    """Kandidat node terdekat ke (lat, lon) dalam radius max_dist meter.
-
-    Mengembalikan list [(node_id, haversine_dist)] terurut menaik (maks k).
-    """
     if not locations:
         return []
     scale = int(round(1.0 / _LOC_BUCKET))
@@ -68,7 +56,6 @@ def k_nearest_nodes(lat: float, lon: float, locations: dict,
 
 def adjacent_highway_classes(graph: dict, edge_classes: dict | None,
                              node_id: int) -> list:
-    """Kelas highway dari edge yang bersisian dengan node_id (untuk logging)."""
     if not edge_classes:
         return []
     classes = set()
@@ -80,7 +67,6 @@ def adjacent_highway_classes(graph: dict, edge_classes: dict | None,
 
 
 def _collect_near_nodes(graph: dict, node_id: int, max_nodes: int) -> set:
-    """Kumpulkan node dalam jarak hop terbatas dari node_id (cap max_nodes)."""
     seen = {node_id}
     frontier = [node_id]
     for _ in range(_SNAP_HOPS):
@@ -100,12 +86,6 @@ def _collect_near_nodes(graph: dict, node_id: int, max_nodes: int) -> set:
 
 def snap_point_to_graph(graph: dict, locations: dict, lat: float, lon: float,
                         node_id: int) -> tuple:
-    """Proyeksikan titik ke segmen jalan terdekat di sekitar node_id.
-
-    Lebih presisi daripada _snap_endpoint (hanya 1-hop): menjelajah hingga
-    _SNAP_HOPS hop dan memilih segmen yang benar-benar terdekat dari koordinat,
-    terlepas dari kelas jalan/access. Kembalikan (lat, lon) titik proyeksi.
-    """
     if node_id not in locations:
         return (lat, lon)
     near = _collect_near_nodes(graph, node_id, _SNAP_MAX_NODES)
@@ -128,7 +108,6 @@ def snap_point_to_graph(graph: dict, locations: dict, lat: float, lon: float,
 
 def log_snap(logger, label: str, lat: float, lon: float, node_id,
              locations: dict, graph: dict, edge_classes: dict | None) -> None:
-    """Log ringkas hasil snapping untuk diagnosa (docs: last-mile routing)."""
     if node_id is None or node_id not in locations:
         logger.info("[SNAP] %s (%f, %f) -> tidak ada node", label, lat, lon)
         return
