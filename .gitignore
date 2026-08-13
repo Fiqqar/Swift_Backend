@@ -17,3 +17,5 @@ target/
 
 # Local OSM PBF data
 data/
+
+docker-compose.override.yml

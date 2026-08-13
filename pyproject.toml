@@ -14,11 +14,14 @@ dependencies = [
     "greenlet>=3.5.4",
     "redis>=8.1.0",
     "osmium>=4.3.1 ; python_full_version < '3.14'",
+    "bcrypt>=5.0.0",
+    "pyjwt>=2.13.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "httpx>=0.28.1",
 ]
 
 [build-system]

@@ -1,5 +1,6 @@
 import os
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -37,8 +38,20 @@ SessionLocal = async_sessionmaker(
 async def init_db() -> None:
     import app.models.paket
     import app.models.route_history
+    import app.models.kurir
+    import app.models.hub
+    import app.models.batch
+    import app.models.shipment
+    import app.models.tracking_history
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS ongkir "
+                    "DOUBLE PRECISION NOT NULL DEFAULT 0"
+                )
+            )
 
 
 async def dispose_db() -> None:
