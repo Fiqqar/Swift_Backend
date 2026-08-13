@@ -1,5 +1,6 @@
 import os
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -44,6 +45,13 @@ async def init_db() -> None:
     import app.models.tracking_history
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS ongkir "
+                    "DOUBLE PRECISION NOT NULL DEFAULT 0"
+                )
+            )
 
 
 async def dispose_db() -> None:
