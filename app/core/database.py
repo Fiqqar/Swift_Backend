@@ -37,6 +37,11 @@ SessionLocal = async_sessionmaker(
 async def init_db() -> None:
     import app.models.paket
     import app.models.route_history
+    import app.models.kurir
+    import app.models.hub
+    import app.models.batch
+    import app.models.shipment
+    import app.models.tracking_history
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
