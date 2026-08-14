@@ -6,7 +6,7 @@ services:
     volumes:
       - .:/app
       - /app/__pycache__
-      - tiles_data:/app/data/tiles
+      - ./data/tiles:/app/data/tiles
     depends_on:
       db:
         condition: service_healthy
@@ -56,7 +56,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  tiles_data:
 
 networks:
   testbe:

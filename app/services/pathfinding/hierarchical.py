@@ -22,6 +22,7 @@ from app.services.pathfinding.graph_loader import (
     load_base_graph,
     load_local_graph_point,
 )
+from app.services.pathfinding.preprocess import PathGraph
 from app.services.pathfinding.snap import log_snap, snap_point_to_graph
 
 logger = logging.getLogger("pathfinding")
@@ -36,9 +37,9 @@ _PARALLEL_LOCAL = os.environ.get("HIER_PARALLEL_LOCAL", "1") == "1"
 class HierarchicalResult:
     origin: tuple
     dest: tuple
-    local_origin: object
-    local_dest: object
-    base: object
+    local_origin: PathGraph
+    local_dest: PathGraph
+    base: PathGraph
     portal_origin: set
     portal_dest: set
     warning: str | None = None
@@ -370,13 +371,13 @@ def route_hierarchical(result: HierarchicalResult,
 
     if local_a:
         path_a = _reconstruct(parent_a, start_a, pa)
-        coords_a = [result.local_origin.locations[n] for n in path_a] # type: ignore
+        coords_a = [result.local_origin.locations[n] for n in path_a]
     else:
         path_a = [pa]
         coords_a = [base_locations[pa]]
     if local_b:
         path_b = _reconstruct_rev(parent_b, pb, goal_b)
-        coords_b = [result.local_dest.locations[n] for n in path_b[1:]] # type: ignore
+        coords_b = [result.local_dest.locations[n] for n in path_b[1:]]
     else:
         path_b = [pb]
         coords_b = []

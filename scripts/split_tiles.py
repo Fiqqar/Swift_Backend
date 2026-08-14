@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..")))
 
 import osmium  # noqa: E402
+import osmium.io  # noqa: E402
+import osmium.osm  # noqa: E402
 
 from app.services.pathfinding.graph_loader import (  # noqa: E402
     _DRIVE_HIGHWAYS,

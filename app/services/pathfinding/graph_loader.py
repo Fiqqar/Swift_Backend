@@ -428,6 +428,8 @@ def load_graph_from_pbf(pbf_path: str,
                         highway_filter: set | None = None,
                         two_pass: bool = True):
     import osmium
+    import osmium.io
+    import osmium.osm
 
     allowed = _DRIVE_HIGHWAYS if highway_filter is None else highway_filter
 
@@ -766,15 +768,16 @@ def _tile_tag(level: int) -> str:
 
 
 def _scan_tiles(tiles: list, bbox: tuple, level: int = 1):
-    kwargs = dict(bbox=bbox, highway_filter=_LEVEL_HIGHWAYS[level],
-                  two_pass=False)
+    highway_filter = _LEVEL_HIGHWAYS[level]
     if _TILE_WORKERS > 1 and len(tiles) > 1:
         n = min(_TILE_WORKERS, len(tiles))
         with ThreadPoolExecutor(max_workers=n) as ex:
             results = list(ex.map(
-                lambda p: load_graph_from_pbf(p, **kwargs), tiles))
+                lambda p: load_graph_from_pbf(p, bbox, highway_filter,
+                                              two_pass=False), tiles))
     else:
-        results = [load_graph_from_pbf(p, **kwargs) for p in tiles]
+        results = [load_graph_from_pbf(p, bbox, highway_filter,
+                                       two_pass=False) for p in tiles]
     graph = {}
     locations = {}
     edge_classes = {}
@@ -859,6 +862,9 @@ def load_local_graph_covering(lat1: float, lon1: float,
             "Area di luar cakupan tile. Jalankan scripts/split_tiles.py.")
 
     m = _tiles_manifest()
+    if m is None:
+        raise AreaNotCoveredError(
+            "Manifest tile tidak ditemukan. Jalankan scripts/split_tiles.py.")
     pad_deg = _COVER_PAD_M / 111320.0
     rect = _rect_bbox(lat1, lon1, lat2, lon2, pad_deg)
     rect = tuple(_snap_cover(v) for v in rect)

@@ -15,7 +15,7 @@ class PathGraph:
     ref_lon: float
     landmarks: list
     landmark_dists: list
-    ch: object = None
+    ch: "ContractionHierarchy | None" = None
     directed: bool = False
     radius: int = 0
     source: str = "demo"

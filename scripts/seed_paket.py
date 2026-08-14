@@ -57,8 +57,9 @@ async def main() -> None:
                 select(Paket).where(Paket.resi == item["resi"]))
             paket = exists.scalar_one_or_none()
             if paket is not None:
-                if paket.ongkir != item["ongkir"]:
-                    paket.ongkir = item["ongkir"]
+                ongkir = float(item["ongkir"] or 0)
+                if paket.ongkir != ongkir:
+                    paket.ongkir = ongkir
                     updated += 1
                 continue
             session.add(Paket(**item))

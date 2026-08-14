@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import current_kurir_or_error, get_session
+from app.api.v1.dependencies import current_kurir, get_session
 from app.api.v1.response import err, ok
 from app.core.security import create_access_token, verify_password
 from app.models.kurir import Kurir
@@ -39,8 +39,5 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
 
 
 @router.get("/me")
-async def me(request: Request, session: AsyncSession = Depends(get_session)):
-    kurir, error = await current_kurir_or_error(request, session)
-    if error:
-        return err(error, 401)
+async def me(kurir: Kurir = Depends(current_kurir)):
     return ok("Berhasil mengambil data kurir", {"kurir": _kurir_data(kurir)})

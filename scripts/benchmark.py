@@ -119,6 +119,8 @@ def benchmark(rows: int, cols: int, pairs: int = 60, seed: int = 7):
         if s != g:
             od_pairs.append((s, g))
 
+    ch = pg.ch
+    assert ch is not None
     methods = {
         "dijkstra": lambda s, g, st: dijkstra_baseline(
             graph, s, g, stats=st),
@@ -128,7 +130,7 @@ def benchmark(rows: int, cols: int, pairs: int = 60, seed: int = 7):
             graph, pg.geo, pg.landmark_dists, s, g, stats=st),
         "bidir_alt": lambda s, g, st: run_bidirectional_alt(
             graph, pg.geo, pg.landmark_dists, s, g, stats=st),
-        "ch": lambda s, g, st: pg.ch.query(s, g, stats=st),
+        "ch": lambda s, g, st: ch.query(s, g, stats=st),
     }
 
     baseline = {}

@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import TypedDict
 
 from app.services.pathfinding.core_a_star import edge_id, haversine_distance
 
@@ -108,7 +109,16 @@ def route_summary(node_sequence: list,
 def _midpoint(coords: list) -> tuple[float, float]:
     if not coords:
         return (0.0, 0.0)
-    return coords[len(coords) // 2]
+    p = coords[len(coords) // 2]
+    return (float(p[0]), float(p[1]))
+
+
+class _Incident(TypedDict):
+    type: str
+    coordinates: list
+    multiplier: float
+    delay: float
+    description: str | None
 
 
 def route_incidents(node_sequence: list,
@@ -122,7 +132,7 @@ def route_incidents(node_sequence: list,
         speed_kmh = 40.0
     threshold_s = delay_minutes * 60.0
     incidents: list[dict] = []
-    cur = None
+    cur: _Incident | None = None
 
     def flush():
         nonlocal cur

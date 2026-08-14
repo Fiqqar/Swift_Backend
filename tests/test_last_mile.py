@@ -87,6 +87,7 @@ def test_route_engine_recovers_via_fallback():
     graph, locations = _island_graph()
     goal_coord = (-6.9, 110.00305)
     goal_node = find_nearest_node(goal_coord[0], goal_coord[1], locations)
+    assert goal_node is not None
     path, cost = engine_route(build_path_graph(
         graph, locations, -6.9, 110.0, enable_ch=False), 0, goal_node)
     assert not path or cost == float("inf")

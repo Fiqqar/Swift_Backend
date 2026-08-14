@@ -257,6 +257,8 @@ async def get_batch(batch_id: int, session: AsyncSession = Depends(get_session))
         return err("Batch tidak ditemukan", 404)
 
     kurir = await session.get(Kurir, batch.kurir_id)
+    if kurir is None:
+        return err("Kurir tidak ditemukan", 404)
     hub = await session.get(Hub, batch.hub_id) if batch.hub_id else None
 
     result = await session.execute(
@@ -373,7 +375,13 @@ async def get_shipment(shipment_id: int, session: AsyncSession = Depends(get_ses
 
     paket = await session.get(Paket, s.paket_id)
     batch = await session.get(Batch, s.batch_id)
+    if batch is None:
+        return err("Batch tidak ditemukan", 404)
+    if paket is None:
+        return err("Paket tidak ditemukan", 404)
     kurir = await session.get(Kurir, batch.kurir_id)
+    if kurir is None:
+        return err("Kurir tidak ditemukan", 404)
     hub = await session.get(Hub, batch.hub_id) if batch.hub_id else None
 
     data = _shipment_dict(s, paket)
@@ -485,6 +493,8 @@ async def get_tracking(shipment_id: int, session: AsyncSession = Depends(get_ses
         return err("Shipment tidak ditemukan", 404)
 
     paket = await session.get(Paket, s.paket_id)
+    if paket is None:
+        return err("Paket tidak ditemukan", 404)
     result = await session.execute(
         select(TrackingHistory)
         .where(TrackingHistory.shipment_id == s.id)
