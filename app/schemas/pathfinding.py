@@ -61,3 +61,59 @@ class RouteOptionsResponse(BaseModel):
     source: str = "demo"
     warning: str | None = None
     graph_radius_meters: int | None = None
+
+
+ServiceType = Literal["EXPRESS", "REGULAR"]
+
+
+class DeliveryStop(BaseModel):
+    package_id: int | None = None
+    recipient_name: str = ""
+    service_type: ServiceType = "REGULAR"
+    alamat: str = Field(min_length=1)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+
+class OptimizedDeliveryRouteRequest(BaseModel):
+    hub_origin: Coordinate
+    deliveries: List[DeliveryStop] = Field(min_length=1)
+    mode: VehicleMode | None = None
+    last_mile_precision: bool | None = None
+    dynamic_rerouting: bool | None = None
+    skip_traffic: bool = False
+    return_to_hub: bool = False
+
+
+class OptimizedDeliveryLeg(BaseModel):
+    leg_index: int = Field(ge=0)
+    stop_sequence_number: int = Field(ge=1)
+    package_id: int | None = None
+    recipient_name: str = ""
+    service_type: ServiceType = "REGULAR"
+    geometry: List[Tuple[float, float]]
+    distance_km: float
+    duration_mins: float
+    estimated_time_seconds: float | None = None
+    traffic_segments: List[TrafficRouteSegment] = []
+    incidents: List[RouteIncident] = []
+
+
+class OptimizedStop(BaseModel):
+    stop_order: int = Field(ge=1)
+    package_id: int | None = None
+    recipient_name: str = ""
+    service_type: ServiceType = "REGULAR"
+    latitude: float
+    longitude: float
+
+
+class OptimizedDeliveryRouteResponse(BaseModel):
+    status: str
+    total_distance_km: float
+    total_duration_mins: float
+    total_legs: int
+    stops: List[OptimizedStop]
+    legs: List[OptimizedDeliveryLeg]
+    source: str = "demo"
+    warning: str | None = None

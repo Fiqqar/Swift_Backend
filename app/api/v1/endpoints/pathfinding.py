@@ -8,6 +8,12 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, HTTPException, Request
 
 from app.schemas.pathfinding import (
+    Coordinate,
+    DeliveryStop,
+    OptimizedDeliveryLeg,
+    OptimizedDeliveryRouteRequest,
+    OptimizedDeliveryRouteResponse,
+    OptimizedStop,
     RouteOption,
     RouteOptionsResponse,
     RouteRequest,
@@ -385,10 +391,10 @@ def _physical_distance(coords: list) -> float:
 async def _best_route(app, plan, redis, traffic_penalties,
                       payload, mode: str, lat1: float, lon1: float,
                       lat2: float, lon2: float,
-                      need_nodes: bool = True):
-   
+                      need_nodes: bool = True,
+                      skip_traffic: bool = False):
     penalties = traffic_penalties
-    
+
     from app.services.pathfinding.vehicle import blocked_penalties_for
     blocked = await run_in_threadpool(
         blocked_penalties_for, plan, mode)
@@ -434,7 +440,8 @@ async def _best_route(app, plan, redis, traffic_penalties,
 
     from app.services.traffic.provider import provider_mode, traffic_enabled
     final_penalties = penalties
-    if traffic_enabled() and provider_mode() == "smart_hybrid":
+    if (not skip_traffic and traffic_enabled()
+            and provider_mode() == "smart_hybrid"):
         from app.services.traffic.smart_hybrid import probe_corridor
         corridor = await probe_corridor(
             app, redis, response.route_coordinates)
@@ -594,4 +601,162 @@ async def find_route_options(payload: RouteRequest, request: Request):
         source=best.source,
         warning=best.warning,
         graph_radius_meters=best.graph_radius_meters,
+    )
+
+
+@router.post("/find-optimized-delivery-route",
+             response_model=OptimizedDeliveryRouteResponse)
+async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
+                                        request: Request):
+    """Rute pengantaran multi-stop dari Hub ke banyak penerima.
+
+    - Meng-geocode alamat tiap delivery (Nominatim + cache Redis) bila koordinat
+      tidak diberikan inline.
+    - Menentukan urutan stop (TSP heuristic) dengan prioritas EXPRESS.
+    - Menghitung leg sungguhan hanya untuk pasangan stop berurutan.
+    """
+    from app.services.geocode import geocode_address
+    from app.services.pathfinding.delivery_optimizer import optimize_stop_order
+    from app.services.traffic.eta import compute_eta
+
+    redis = getattr(request.app.state, "redis", None)
+    hub = (payload.hub_origin.latitude, payload.hub_origin.longitude)
+    mode = _normalize_mode(payload)
+    last_mile = last_mile_enabled(payload)
+    need_nodes = True
+
+    stops = []
+    failed = []
+    for d in payload.deliveries:
+        lat = d.latitude
+        lon = d.longitude
+        if lat is None or lon is None:
+            coords = await geocode_address(redis, d.alamat)
+            if coords is None:
+                failed.append(d.alamat)
+                continue
+            lat, lon = coords
+        stops.append({
+            "package_id": d.package_id,
+            "recipient_name": d.recipient_name,
+            "service_type": d.service_type,
+            "coordinate": (lat, lon),
+        })
+    if failed:
+        raise HTTPException(
+            status_code=400,
+            detail="Gagal geocode alamat: " + "; ".join(failed[:5]) +
+                   ("; ..." if len(failed) > 5 else ""),
+        )
+
+    service_types = [s["service_type"] for s in stops]
+    order = optimize_stop_order(
+        hub, [s["coordinate"] for s in stops],
+        service_types=service_types,
+        return_to_hub=payload.return_to_hub,
+    )
+    ordered = [stops[i] for i in order]
+
+    incident_delay_minutes = max(0.0, _env_float("INCIDENT_DELAY_MINUTES", 3.0))
+    from app.services.traffic.poller import _reference_graph
+    from app.services.traffic.eta import eta_config
+    eta_graph, eta_locations = _reference_graph(request.app)
+    speed_kmh = eta_config()["mode_speed_kmh"]
+
+    legs = []
+    total_dist = 0.0
+    total_dur = 0.0
+    prev = hub
+    warnings = []
+    sources = []
+
+    async def _add_leg(stop, prev_coord):
+        nonlocal total_dist, total_dur, prev
+        dest = stop["coordinate"]
+        try:
+            plan = await run_in_threadpool(
+                _resolve_plan, request.app,
+                prev_coord[0], prev_coord[1], dest[0], dest[1])
+        except AreaNotCoveredError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        leg_payload = RouteRequest(
+            origin=Coordinate(latitude=prev_coord[0], longitude=prev_coord[1]),
+            destination=Coordinate(latitude=dest[0], longitude=dest[1]),
+            mode=mode,
+            last_mile_precision=last_mile,
+            dynamic_rerouting=payload.dynamic_rerouting,
+        )
+        traffic_penalties = {}
+        if not payload.skip_traffic:
+            traffic_penalties = await get_request_penalties(
+                request.app, redis, prev_coord, dest)
+        response, node_sequence, final_penalties, _m = await _best_route(
+            request.app, plan, redis, traffic_penalties, leg_payload, mode,
+            prev_coord[0], prev_coord[1], dest[0], dest[1],
+            need_nodes=need_nodes, skip_traffic=payload.skip_traffic)
+        if response is None:
+            raise HTTPException(status_code=404,
+                                detail="Rute tidak ditemukan ke stop "
+                                       f"{stop['recipient_name'] or stop['package_id']}")
+
+        distance_m = _physical_distance(response.route_coordinates)
+        eta_s = response.estimated_time_seconds
+        if eta_s is None:
+            eta_s = compute_eta(eta_graph, eta_locations,
+                                response.route_coordinates, final_penalties)
+        incidents = route_incidents(
+            node_sequence or [], response.route_coordinates,
+            final_penalties, speed_kmh, incident_delay_minutes)
+        legs.append(OptimizedDeliveryLeg(
+            leg_index=len(legs),
+            stop_sequence_number=len(legs) + 1,
+            package_id=stop["package_id"],
+            recipient_name=stop["recipient_name"],
+            service_type=stop["service_type"],
+            geometry=response.route_coordinates,
+            distance_km=round(distance_m / 1000.0, 2),
+            duration_mins=round((eta_s or 0.0) / 60.0, 1),
+            estimated_time_seconds=eta_s,
+            traffic_segments=_traffic_segments(node_sequence, final_penalties),
+            incidents=incidents,
+        ))
+        total_dist += distance_m
+        total_dur += (eta_s or 0.0)
+        if response.warning:
+            warnings.append(response.warning)
+        sources.append(response.source)
+        prev = dest
+
+    for stop in ordered:
+        await _add_leg(stop, prev)
+
+    if payload.return_to_hub and ordered:
+        await _add_leg({
+            "package_id": None,
+            "recipient_name": "Hub",
+            "service_type": "REGULAR",
+            "coordinate": hub,
+        }, prev)
+
+    stops_resp = []
+    for seq, idx in enumerate(order, start=1):
+        stops_resp.append(OptimizedStop(
+            stop_order=seq,
+            package_id=stops[idx]["package_id"],
+            recipient_name=stops[idx]["recipient_name"],
+            service_type=stops[idx]["service_type"],
+            latitude=stops[idx]["coordinate"][0],
+            longitude=stops[idx]["coordinate"][1],
+        ))
+
+    return OptimizedDeliveryRouteResponse(
+        status="success",
+        total_distance_km=round(total_dist / 1000.0, 2),
+        total_duration_mins=round(total_dur / 60.0, 1),
+        total_legs=len(legs),
+        stops=stops_resp,
+        legs=legs,
+        source=sources[0] if sources else "demo",
+        warning="; ".join(dict.fromkeys(warnings)) or None,
     )
