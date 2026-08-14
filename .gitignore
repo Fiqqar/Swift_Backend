@@ -9,7 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
-docs
 cache
 
 # Rust build artifacts

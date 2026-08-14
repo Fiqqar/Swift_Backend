@@ -22,6 +22,7 @@ class PathGraph:
     warning: str | None = None
     bbox: tuple | None = None
     edge_classes: dict | None = None
+    _alt_k: int = 0
 
 
 def dijkstra_all(graph: dict, source) -> dict:
@@ -346,11 +347,11 @@ def build_path_graph(graph, locations, ref_lat, ref_lon,
                      edge_classes: dict | None = None) -> PathGraph:
     geo = precompute_geo(locations)
     directed = is_directed(graph)
-    landmarks = select_landmarks(graph, locations, landmarks_k)
-    landmark_dists = [dijkstra_all(graph, lm) for lm in landmarks]
     ch = None
     if enable_ch and not directed and len(graph) <= _CH_MAX_NODES:
         ch = build_ch(graph, max_witness_nodes)
+    landmarks: list = []
+    landmark_dists: list = []
     return PathGraph(graph, locations, geo, ref_lat, ref_lon,
                      landmarks, landmark_dists, ch, directed,
-                     edge_classes=edge_classes)
+                     edge_classes=edge_classes, _alt_k=landmarks_k)
