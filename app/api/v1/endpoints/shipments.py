@@ -2,11 +2,11 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import get_session
+from app.api.v1.dependencies import current_kurir_or_error, get_session
 from app.api.v1.response import err, ok
 from app.models.batch import Batch
 from app.models.hub import Hub
@@ -378,16 +378,19 @@ async def update_batch_status(
 async def list_shipments(
     status: str | None = None,
     batch_id: int | None = None,
-    kurir_id: int | None = None,
+    request: Request = Request,
     session: AsyncSession = Depends(get_session),
 ):
+    kurir, error = await current_kurir_or_error(request, session)
+    if error:
+        return err(error, 401)
+
     stmt = select(Shipment).join(Batch, Shipment.batch_id == Batch.id)
     if status:
         stmt = stmt.where(Shipment.status == status)
     if batch_id:
         stmt = stmt.where(Shipment.batch_id == batch_id)
-    if kurir_id:
-        stmt = stmt.where(Batch.kurir_id == kurir_id)
+    stmt = stmt.where(Batch.kurir_id == kurir.id)
     stmt = stmt.order_by(Shipment.id.desc())
 
     shipments = (await session.execute(stmt)).scalars().all()

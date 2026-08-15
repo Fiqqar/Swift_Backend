@@ -1,0 +1,1722 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TEST2 API Engine",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/pathfinding/find-route": {
+      "post": {
+        "tags": [
+          "Pathfinding"
+        ],
+        "summary": "Find Route",
+        "operationId": "find_route_api_v1_pathfinding_find_route_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pathfinding/find-route-options": {
+      "post": {
+        "tags": [
+          "Pathfinding"
+        ],
+        "summary": "Find Route Options",
+        "operationId": "find_route_options_api_v1_pathfinding_find_route_options_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteOptionsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/traffic/update-weight": {
+      "post": {
+        "tags": [
+          "Traffic"
+        ],
+        "summary": "Update Weight",
+        "operationId": "update_weight_api_v1_traffic_update_weight_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeightUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeightAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/traffic/penalties": {
+      "get": {
+        "tags": [
+          "Traffic"
+        ],
+        "summary": "List Penalties",
+        "operationId": "list_penalties_api_v1_traffic_penalties_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PenaltiesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/traffic/status": {
+      "get": {
+        "tags": [
+          "Traffic"
+        ],
+        "summary": "Traffic Status",
+        "operationId": "traffic_status_api_v1_traffic_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/traffic/map": {
+      "get": {
+        "tags": [
+          "Traffic"
+        ],
+        "summary": "Traffic Map",
+        "operationId": "traffic_map_api_v1_traffic_map_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficMapResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Auth",
+          "Auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "Auth",
+          "Auth"
+        ],
+        "summary": "Me",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batches": {
+      "post": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Assign Batch",
+        "operationId": "assign_batch_api_v1_batches_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchAssignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "List Batches",
+        "operationId": "list_batches_api_v1_batches_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "kurir_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kurir Id"
+            }
+          },
+          {
+            "name": "hub_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hub Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batches/{batch_id}": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Get Batch",
+        "operationId": "get_batch_api_v1_batches__batch_id__get",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batches/{batch_id}/status": {
+      "patch": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Update Batch Status",
+        "operationId": "update_batch_status_api_v1_batches__batch_id__status_patch",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchStatusUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "List Shipments",
+        "operationId": "list_shipments_api_v1_shipments_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "kurir_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kurir Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Get Shipment",
+        "operationId": "get_shipment_api_v1_shipments__shipment_id__get",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}/status": {
+      "patch": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Update Shipment Status",
+        "operationId": "update_shipment_status_api_v1_shipments__shipment_id__status_patch",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentStatusUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}/cod": {
+      "patch": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Update Cod",
+        "operationId": "update_cod_api_v1_shipments__shipment_id__cod_patch",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}/billing": {
+      "patch": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Update Billing",
+        "operationId": "update_billing_api_v1_shipments__shipment_id__billing_patch",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}/tracking": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Get Tracking",
+        "operationId": "get_tracking_api_v1_shipments__shipment_id__tracking_get",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{shipment_id}/history": {
+      "post": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "Create History",
+        "operationId": "create_history_api_v1_shipments__shipment_id__history_post",
+        "parameters": [
+          {
+            "name": "shipment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Shipment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoryCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kurir": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "List Kurir",
+        "operationId": "list_kurir_api_v1_kurir_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hubs": {
+      "get": {
+        "tags": [
+          "Shipment",
+          "Shipment"
+        ],
+        "summary": "List Hubs",
+        "operationId": "list_hubs_api_v1_hubs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BatchAssignRequest": {
+        "properties": {
+          "paket_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Paket Ids",
+            "description": "ID paket yang di-assign"
+          },
+          "kurir_id": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Kurir Id"
+          },
+          "hub_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hub Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paket_ids",
+          "kurir_id"
+        ],
+        "title": "BatchAssignRequest"
+      },
+      "BatchStatusUpdate": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "picked_up",
+              "delivered",
+              "returned"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "BatchStatusUpdate"
+      },
+      "BillingUpdate": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "paid",
+              "refunded"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "BillingUpdate"
+      },
+      "CodUpdate": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "remitted",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "CodUpdate"
+      },
+      "Coordinate": {
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude"
+          }
+        },
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "Coordinate"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HistoryCreate": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "received_at_hub",
+              "departed_hub"
+            ],
+            "title": "Event"
+          },
+          "keterangan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keterangan"
+          },
+          "hub_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hub Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event"
+        ],
+        "title": "HistoryCreate"
+      },
+      "LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "default": ""
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "LoginRequest"
+      },
+      "MapSegment": {
+        "properties": {
+          "edge_id": {
+            "type": "integer",
+            "title": "Edge Id"
+          },
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier"
+          },
+          "closure": {
+            "type": "boolean",
+            "title": "Closure"
+          },
+          "coordinates": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Coordinates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "edge_id",
+          "multiplier",
+          "closure",
+          "coordinates"
+        ],
+        "title": "MapSegment"
+      },
+      "PenaltiesResponse": {
+        "properties": {
+          "penalties": {
+            "items": {
+              "$ref": "#/components/schemas/PenaltyEntry"
+            },
+            "type": "array",
+            "title": "Penalties"
+          }
+        },
+        "type": "object",
+        "required": [
+          "penalties"
+        ],
+        "title": "PenaltiesResponse"
+      },
+      "PenaltyEntry": {
+        "properties": {
+          "edge_id": {
+            "type": "integer",
+            "title": "Edge Id"
+          },
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "edge_id",
+          "multiplier"
+        ],
+        "title": "PenaltyEntry"
+      },
+      "ProviderStatus": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "active"
+        ],
+        "title": "ProviderStatus"
+      },
+      "RouteIncident": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "road_closure",
+              "congestion"
+            ],
+            "title": "Type"
+          },
+          "location": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Location"
+          },
+          "coordinates": {
+            "items": {
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "array",
+            "title": "Coordinates",
+            "default": []
+          },
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier",
+            "default": 1.0
+          },
+          "delay_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delay Minutes"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "location",
+          "description"
+        ],
+        "title": "RouteIncident"
+      },
+      "RouteOption": {
+        "properties": {
+          "route_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Route Id"
+          },
+          "is_best": {
+            "type": "boolean",
+            "title": "Is Best",
+            "default": false
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": "Rute utama"
+          },
+          "distance_km": {
+            "type": "number",
+            "title": "Distance Km"
+          },
+          "duration_mins": {
+            "type": "number",
+            "title": "Duration Mins"
+          },
+          "total_distance_meters": {
+            "type": "number",
+            "title": "Total Distance Meters"
+          },
+          "route_coordinates": {
+            "items": {
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "array",
+            "title": "Route Coordinates"
+          },
+          "estimated_time_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Time Seconds"
+          },
+          "estimated_arrival": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Arrival"
+          },
+          "traffic_segments": {
+            "items": {
+              "$ref": "#/components/schemas/TrafficRouteSegment"
+            },
+            "type": "array",
+            "title": "Traffic Segments",
+            "default": []
+          },
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/RouteIncident"
+            },
+            "type": "array",
+            "title": "Incidents",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "route_id",
+          "distance_km",
+          "duration_mins",
+          "total_distance_meters",
+          "route_coordinates"
+        ],
+        "title": "RouteOption"
+      },
+      "RouteOptionsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total_route": {
+            "type": "integer",
+            "title": "Total Route"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/RouteOption"
+            },
+            "type": "array",
+            "title": "Routes"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "demo"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          },
+          "graph_radius_meters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Radius Meters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "total_route",
+          "routes"
+        ],
+        "title": "RouteOptionsResponse"
+      },
+      "RouteRequest": {
+        "properties": {
+          "origin": {
+            "$ref": "#/components/schemas/Coordinate"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/Coordinate"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "motorcycle",
+                  "car",
+                  "truck"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "last_mile_precision": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Mile Precision"
+          },
+          "dynamic_rerouting": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dynamic Rerouting"
+          }
+        },
+        "type": "object",
+        "required": [
+          "origin",
+          "destination"
+        ],
+        "title": "RouteRequest"
+      },
+      "RouteResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total_distance_meters": {
+            "type": "number",
+            "title": "Total Distance Meters"
+          },
+          "route_coordinates": {
+            "items": {
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "array",
+            "title": "Route Coordinates"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "demo"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          },
+          "graph_radius_meters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Radius Meters"
+          },
+          "estimated_time_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Time Seconds"
+          },
+          "estimated_arrival": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Arrival"
+          },
+          "traffic_segments": {
+            "items": {
+              "$ref": "#/components/schemas/TrafficRouteSegment"
+            },
+            "type": "array",
+            "title": "Traffic Segments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "total_distance_meters",
+          "route_coordinates"
+        ],
+        "title": "RouteResponse"
+      },
+      "ShipmentStatusUpdate": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "picked_up",
+              "delivered",
+              "failed",
+              "returned"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ShipmentStatusUpdate"
+      },
+      "TrafficMapResponse": {
+        "properties": {
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/MapSegment"
+            },
+            "type": "array",
+            "title": "Segments"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "segments"
+        ],
+        "title": "TrafficMapResponse"
+      },
+      "TrafficRouteSegment": {
+        "properties": {
+          "start_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Start Index"
+          },
+          "end_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "End Index"
+          },
+          "multiplier": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Multiplier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_index",
+          "end_index",
+          "multiplier"
+        ],
+        "title": "TrafficRouteSegment"
+      },
+      "TrafficStatusResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "poller_running": {
+            "type": "boolean",
+            "title": "Poller Running"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderStatus"
+            },
+            "type": "array",
+            "title": "Providers"
+          },
+          "penalty_count": {
+            "type": "integer",
+            "title": "Penalty Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "mode",
+          "poller_running",
+          "providers",
+          "penalty_count"
+        ],
+        "title": "TrafficStatusResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WeightAck": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "edge_id": {
+            "type": "integer",
+            "title": "Edge Id"
+          },
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "edge_id",
+          "multiplier"
+        ],
+        "title": "WeightAck"
+      },
+      "WeightUpdate": {
+        "properties": {
+          "edge_id": {
+            "type": "integer",
+            "title": "Edge Id"
+          },
+          "multiplier": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Multiplier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "edge_id",
+          "multiplier"
+        ],
+        "title": "WeightUpdate"
+      }
+    }
+  }
+}
