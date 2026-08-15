@@ -18,6 +18,8 @@ class Paket(Base):
     cod: Mapped[bool] = mapped_column(Boolean, default=False)
     harga: Mapped[float] = mapped_column(Float, default=0.0)
     ongkir: Mapped[float] = mapped_column(Float, default=0.0)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     catatan: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

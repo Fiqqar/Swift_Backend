@@ -52,6 +52,18 @@ async def init_db() -> None:
                     "DOUBLE PRECISION NOT NULL DEFAULT 0"
                 )
             )
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS latitude "
+                    "DOUBLE PRECISION"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS longitude "
+                    "DOUBLE PRECISION"
+                )
+            )
 
 
 async def dispose_db() -> None:

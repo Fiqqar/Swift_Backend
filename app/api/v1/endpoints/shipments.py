@@ -304,12 +304,14 @@ async def update_batch_status(
         return err(f"Tidak bisa ubah status batch dari '{cur}' ke '{new}'", 409)
 
     now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(Shipment).where(Shipment.batch_id == batch.id)
+    )
+    shipments = result.scalars().all()
+
     if new == "picked_up":
         batch.picked_up_at = now
-        result = await session.execute(
-            select(Shipment).where(Shipment.batch_id == batch.id)
-        )
-        for s in result.scalars().all():
+        for s in shipments:
             if s.status == "assigned":
                 s.status = "picked_up"
                 s.picked_up_at = now
@@ -323,6 +325,37 @@ async def update_batch_status(
                 )
     elif new == "delivered":
         batch.delivered_at = now
+        for s in shipments:
+            if s.status != "picked_up":
+                continue
+            s.status = "delivered"
+            s.delivered_at = now
+            if s.cod_status == "pending":
+                s.cod_status = "collected"
+                s.cod_collected_at = now
+            session.add(
+                TrackingHistory(
+                    shipment_id=s.id,
+                    event="delivered",
+                    keterangan="Paket diterima penerima",
+                    hub_id=batch.hub_id,
+                )
+            )
+    elif new == "returned":
+        for s in shipments:
+            if s.status not in ("assigned", "picked_up"):
+                continue
+            s.status = "returned"
+            if s.cod_status in ("pending", "collected"):
+                s.cod_status = "not_applicable"
+            session.add(
+                TrackingHistory(
+                    shipment_id=s.id,
+                    event="returned",
+                    keterangan="Paket dikembalikan",
+                    hub_id=batch.hub_id,
+                )
+            )
     batch.status = new
     await session.commit()
 
