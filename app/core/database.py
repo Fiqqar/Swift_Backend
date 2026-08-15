@@ -54,6 +54,18 @@ async def init_db() -> None:
             )
             await conn.execute(
                 text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS latitude "
+                    "DOUBLE PRECISION"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS longitude "
+                    "DOUBLE PRECISION"
+                )
+            )
+            await conn.execute(
+                text(
                     "ALTER TABLE paket ADD COLUMN IF NOT EXISTS service_type "
                     "VARCHAR(20) NOT NULL DEFAULT 'REGULAR'"
                 )

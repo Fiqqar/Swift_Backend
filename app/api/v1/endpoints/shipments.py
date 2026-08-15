@@ -2,11 +2,11 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import get_session
+from app.api.v1.dependencies import current_kurir_or_error, get_session
 from app.api.v1.response import err, ok
 from app.models.batch import Batch
 from app.models.hub import Hub
@@ -313,12 +313,14 @@ async def update_batch_status(
         return err(f"Tidak bisa ubah status batch dari '{cur}' ke '{new}'", 409)
 
     now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(Shipment).where(Shipment.batch_id == batch.id)
+    )
+    shipments = result.scalars().all()
+
     if new == "picked_up":
         batch.picked_up_at = now
-        result = await session.execute(
-            select(Shipment).where(Shipment.batch_id == batch.id)
-        )
-        for s in result.scalars().all():
+        for s in shipments:
             if s.status == "assigned":
                 s.status = "picked_up"
                 s.picked_up_at = now
@@ -332,6 +334,37 @@ async def update_batch_status(
                 )
     elif new == "delivered":
         batch.delivered_at = now
+        for s in shipments:
+            if s.status != "picked_up":
+                continue
+            s.status = "delivered"
+            s.delivered_at = now
+            if s.cod_status == "pending":
+                s.cod_status = "collected"
+                s.cod_collected_at = now
+            session.add(
+                TrackingHistory(
+                    shipment_id=s.id,
+                    event="delivered",
+                    keterangan="Paket diterima penerima",
+                    hub_id=batch.hub_id,
+                )
+            )
+    elif new == "returned":
+        for s in shipments:
+            if s.status not in ("assigned", "picked_up"):
+                continue
+            s.status = "returned"
+            if s.cod_status in ("pending", "collected"):
+                s.cod_status = "not_applicable"
+            session.add(
+                TrackingHistory(
+                    shipment_id=s.id,
+                    event="returned",
+                    keterangan="Paket dikembalikan",
+                    hub_id=batch.hub_id,
+                )
+            )
     batch.status = new
     await session.commit()
 
@@ -345,16 +378,19 @@ async def update_batch_status(
 async def list_shipments(
     status: str | None = None,
     batch_id: int | None = None,
-    kurir_id: int | None = None,
+    request: Request = Request,
     session: AsyncSession = Depends(get_session),
 ):
+    kurir, error = await current_kurir_or_error(request, session)
+    if error:
+        return err(error, 401)
+
     stmt = select(Shipment).join(Batch, Shipment.batch_id == Batch.id)
     if status:
         stmt = stmt.where(Shipment.status == status)
     if batch_id:
         stmt = stmt.where(Shipment.batch_id == batch_id)
-    if kurir_id:
-        stmt = stmt.where(Batch.kurir_id == kurir_id)
+    stmt = stmt.where(Batch.kurir_id == kurir.id)
     stmt = stmt.order_by(Shipment.id.desc())
 
     shipments = (await session.execute(stmt)).scalars().all()

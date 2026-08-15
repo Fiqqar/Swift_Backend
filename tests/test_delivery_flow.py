@@ -108,7 +108,13 @@ async def _run():
                 "VALUES ('Pkt Biasa', :phone, 'Jl. Test 2', :resi, 'reguler', "
                 "'REGULAR', false, 0, 20000) RETURNING id"),
                 {"phone": phone1, "resi": resi_b})).scalar()
-        ids.update(kurir_ids=[k1, k2], hub_id=hub_id, paket_ids=[p1, p2])
+            p3 = (await conn.execute(text(
+                "INSERT INTO paket (nama, nomor_telepon, alamat, resi, "
+                "jenis_pengiriman, service_type, cod, harga, ongkir) "
+                "VALUES ('Pkt Lain', :phone, 'Jl. Test 3', :resi, 'reguler', "
+                "'REGULAR', false, 0, 10000) RETURNING id"),
+                {"phone": phone2, "resi": f"TST-{base}-C"})).scalar()
+        ids.update(kurir_ids=[k1, k2], hub_id=hub_id, paket_ids=[p1, p2, p3])
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -117,6 +123,11 @@ async def _run():
                              json={"username": user1, "password": "rahasia123"})
             assert r.status_code == 200 and r.json()["success"], r.text
             token = r.json()["data"]["token"]
+
+            r = await c.post("/api/v1/auth/login",
+                             json={"username": user2, "password": "rahasia123"})
+            assert r.status_code == 200 and r.json()["success"], r.text
+            token2 = r.json()["data"]["token"]
 
             r = await c.get("/api/v1/auth/me",
                             headers={"Authorization": f"Bearer {token}"})
@@ -154,11 +165,45 @@ async def _run():
             r = await c.patch(f"/api/v1/batches/{bid}/status",
                               json={"status": "picked_up"})
             assert r.status_code == 200, r.text
-            r = await c.get(f"/api/v1/shipments?batch_id={bid}")
+            r = await c.get(f"/api/v1/shipments?batch_id={bid}",
+                            headers={"Authorization": f"Bearer {token}"})
             assert r.status_code == 200, r.text
             items = r.json()["data"]
             assert len(items) == 2, r.text
             assert all(s["status"] == "picked_up" for s in items), r.text
+
+            # batch kedua milik kurir lain (k2), paket p3
+            r = await c.post("/api/v1/batches",
+                             json={"kurir_id": k2, "paket_ids": [p3],
+                                   "hub_id": hub_id})
+            assert r.status_code == 201, r.text
+            bid2 = r.json()["data"]["batch"]["id"]
+            ids["batch_ids"].append(bid2)
+
+            # GET /shipments otomatis filter berdasarkan token yang login
+            r = await c.get("/api/v1/shipments")
+            assert r.status_code == 401, r.text
+            assert r.json()["success"] is False, r.text
+
+            r = await c.get("/api/v1/shipments",
+                            headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 200, r.text
+            k1_items = r.json()["data"]
+            assert len(k1_items) == 2, r.text
+            assert all(i["kurir_id"] == k1 for i in k1_items), r.text
+
+            r = await c.get("/api/v1/shipments",
+                            headers={"Authorization": f"Bearer {token2}"})
+            assert r.status_code == 200, r.text
+            k2_items = r.json()["data"]
+            assert len(k2_items) == 1, r.text
+            assert all(i["kurir_id"] == k2 for i in k2_items), r.text
+
+            # token user2 tapi batch_id milik k1 -> tetap kosong
+            r = await c.get(f"/api/v1/shipments?batch_id={bid}",
+                            headers={"Authorization": f"Bearer {token2}"})
+            assert r.status_code == 200, r.text
+            assert r.json()["data"] == [], r.text
 
             cod_sid = next(s["shipment_id"] for s in items
                            if s["cod"]["status"] == "pending")
