@@ -52,6 +52,49 @@ async def init_db() -> None:
                     "DOUBLE PRECISION NOT NULL DEFAULT 0"
                 )
             )
+            await conn.execute(
+                text(
+                    "ALTER TABLE paket ADD COLUMN IF NOT EXISTS service_type "
+                    "VARCHAR(20) NOT NULL DEFAULT 'REGULAR'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE paket SET service_type = 'EXPRESS' "
+                    "WHERE service_type = 'REGULAR' "
+                    "AND LOWER(jenis_pengiriman) IN "
+                    "('express', 'same_day', 'same-day', 'next_day', 'next-day')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS "
+                    "recipient_name VARCHAR(255)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS "
+                    "latitude DOUBLE PRECISION"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS "
+                    "longitude DOUBLE PRECISION"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS "
+                    "photo_urls JSON"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE tracking_history DROP COLUMN IF EXISTS signature_url"
+                )
+            )
 
 
 async def dispose_db() -> None:

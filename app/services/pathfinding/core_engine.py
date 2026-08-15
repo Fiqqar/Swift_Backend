@@ -11,7 +11,7 @@ except ImportError:
 def _rust_graph_for(pg):
     rg = getattr(pg, "_rust_graph", None)
     if rg is None:
-        rg = _rust_engine.RustGraph(pg.graph, True)
+        rg = _rust_engine.RustGraph(pg.graph, True)  # type: ignore
         pg._rust_graph = rg
     return rg
 

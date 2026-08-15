@@ -16,6 +16,7 @@ dependencies = [
     "osmium>=4.3.1 ; python_full_version < '3.14'",
     "bcrypt>=5.0.0",
     "pyjwt>=2.13.0",
+    "cloudinary>=1.45.0",
 ]
 
 [dependency-groups]

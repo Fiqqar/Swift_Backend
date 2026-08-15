@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
+from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -268,7 +269,34 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="TEST2 API Engine",
+    description=(
+        "API pathfinding & pengiriman (delivery) dengan engine rute "
+        "ALT + CH, hierarchical routing (graf gang level-1 dari tile lokal), "
+        "traffic TomTom, dan manajemen kurir/batch/shipment.\n\n"
+        "Gunakan tombol **Authorize** untuk memasukkan token dari "
+        "`POST /api/v1/auth/login` agar endpoint yang membutuhkan autentikasi "
+        "dapat diuji."
+    ),
     version="1.0.0",
+    openapi_tags=[
+        {
+            "name": "Pathfinding",
+            "description": "Pencarian rute, route options, hierarchical & "
+                           "last-mile (gang).",
+        },
+        {
+            "name": "Auth",
+            "description": "Login kurir dan profil token.",
+        },
+        {
+            "name": "Shipment",
+            "description": "Manajemen shipment, batch, billing, tracking.",
+        },
+        {
+            "name": "Traffic",
+            "description": "Peta kepadatan dan status lalu lintas.",
+        },
+    ],
     lifespan=lifespan,
 )
 
@@ -279,6 +307,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def _uniform_http_exception(request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "success": False,
+            "message": str(exc.detail),
+        },
+    )
+
 
 app.include_router(api_router, prefix="/api/v1")
 

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..")))
 
 from app.services.pathfinding.core_a_star import (
+    _ensure_alt,
     haversine_distance,
     run_a_star,
     run_alt_a_star,
@@ -103,7 +104,12 @@ def benchmark(rows: int, cols: int, pairs: int = 60, seed: int = 7):
     t0 = time.perf_counter()
     pg = build_path_graph(graph, locations, -6.1754, 106.8272)
     preprocess_time = time.perf_counter() - t0
-    print(f"Preprocessing (ALT + CH): {preprocess_time * 1000:.0f} ms")
+    print(f"Preprocessing (CH): {preprocess_time * 1000:.0f} ms")
+
+    t0 = time.perf_counter()
+    _ensure_alt(pg)
+    alt_time = time.perf_counter() - t0
+    print(f"ALT lazy materialisasi: {alt_time * 1000:.0f} ms")
 
     rng = random.Random(seed)
     od_pairs = []
@@ -113,6 +119,8 @@ def benchmark(rows: int, cols: int, pairs: int = 60, seed: int = 7):
         if s != g:
             od_pairs.append((s, g))
 
+    ch = pg.ch
+    assert ch is not None
     methods = {
         "dijkstra": lambda s, g, st: dijkstra_baseline(
             graph, s, g, stats=st),
@@ -122,7 +130,7 @@ def benchmark(rows: int, cols: int, pairs: int = 60, seed: int = 7):
             graph, pg.geo, pg.landmark_dists, s, g, stats=st),
         "bidir_alt": lambda s, g, st: run_bidirectional_alt(
             graph, pg.geo, pg.landmark_dists, s, g, stats=st),
-        "ch": lambda s, g, st: pg.ch.query(s, g, stats=st),
+        "ch": lambda s, g, st: ch.query(s, g, stats=st),
     }
 
     baseline = {}

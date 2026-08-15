@@ -1,9 +1,10 @@
 import heapq
 import math
+import threading
 
 
 def haversine_distance(coord1: tuple, coord2: tuple) -> float:
-    R = 6371000  # Radius bumi (meter)
+    R = 6371000
     lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
     lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
 
@@ -240,6 +241,24 @@ def run_bidirectional_alt(graph: dict, geo: dict, landmark_dists: list,
     return path_fwd + path_bwd, mu
 
 
+_ALT_LOCK = threading.RLock()
+
+
+def _ensure_alt(pg) -> None:
+    if getattr(pg, "_alt_k", 0) <= 0 or pg.landmark_dists:
+        return
+    with _ALT_LOCK:
+        if pg.landmark_dists:
+            return
+        from app.services.pathfinding.preprocess import (
+            dijkstra_all,
+            select_landmarks,
+        )
+        landmarks = select_landmarks(pg.graph, pg.locations, pg._alt_k)
+        pg.landmarks = landmarks
+        pg.landmark_dists = [dijkstra_all(pg.graph, lm) for lm in landmarks]
+
+
 def shortest_path(pg, start_node: int, goal_node: int,
                   penalties: dict | None = None):
     if penalties:
@@ -249,6 +268,7 @@ def shortest_path(pg, start_node: int, goal_node: int,
         path, cost = pg.ch.query(start_node, goal_node)
         if path is not None:
             return path, cost
+    _ensure_alt(pg)
     if pg.landmark_dists and not pg.directed:
         path, cost = run_bidirectional_alt(
             pg.graph, pg.geo, pg.landmark_dists, start_node, goal_node)

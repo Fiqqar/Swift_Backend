@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(
 from sqlalchemy import select  # noqa: E402
 
 from app.core.database import SessionLocal, init_db  # noqa: E402
-from app.models.paket import Paket  # noqa: E402
+from app.models.paket import Paket, normalize_service_type  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 
@@ -57,11 +57,17 @@ async def main() -> None:
                 select(Paket).where(Paket.resi == item["resi"]))
             paket = exists.scalar_one_or_none()
             if paket is not None:
-                if paket.ongkir != item["ongkir"]:
-                    paket.ongkir = item["ongkir"]
+                ongkir = float(item["ongkir"] or 0)
+                service_type = normalize_service_type(item["jenis_pengiriman"])
+                if paket.ongkir != ongkir or paket.service_type != service_type:
+                    paket.ongkir = ongkir
+                    paket.service_type = service_type
                     updated += 1
                 continue
-            session.add(Paket(**item))
+            session.add(Paket(
+                **item,
+                service_type=normalize_service_type(item["jenis_pengiriman"]),
+            ))
             inserted += 1
         await session.commit()
     print(f"Seed selesai: {inserted} baris baru, {updated} diupdate, "

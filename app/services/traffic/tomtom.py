@@ -54,7 +54,7 @@ class TomTomProvider:
             results = await asyncio.gather(*tasks, return_exceptions=True)
         events: list[TrafficEvent] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("[TRAFFIC] TomTom request gagal: %s", result)
                 continue
             if result is not None:

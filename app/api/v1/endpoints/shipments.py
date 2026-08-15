@@ -1,6 +1,8 @@
+import time
 from datetime import datetime, timezone
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +21,12 @@ from app.schemas.shipment import (
     CodUpdate,
     HistoryCreate,
     ShipmentStatusUpdate,
+)
+from app.services.cloudinary_service import (
+    CloudinaryNotConfiguredError,
+    UPLOAD_FOLDER,
+    cloudinary_configured,
+    upload_image,
 )
 
 router = APIRouter(tags=["Shipment"])
@@ -57,6 +65,7 @@ def _paket_dict(paket: Paket) -> dict:
         "nama": paket.nama,
         "alamat": paket.alamat,
         "jenis_pengiriman": paket.jenis_pengiriman,
+        "service_type": paket.service_type,
     }
 
 
@@ -257,6 +266,8 @@ async def get_batch(batch_id: int, session: AsyncSession = Depends(get_session))
         return err("Batch tidak ditemukan", 404)
 
     kurir = await session.get(Kurir, batch.kurir_id)
+    if kurir is None:
+        return err("Kurir tidak ditemukan", 404)
     hub = await session.get(Hub, batch.hub_id) if batch.hub_id else None
 
     result = await session.execute(
@@ -373,7 +384,13 @@ async def get_shipment(shipment_id: int, session: AsyncSession = Depends(get_ses
 
     paket = await session.get(Paket, s.paket_id)
     batch = await session.get(Batch, s.batch_id)
+    if batch is None:
+        return err("Batch tidak ditemukan", 404)
+    if paket is None:
+        return err("Paket tidak ditemukan", 404)
     kurir = await session.get(Kurir, batch.kurir_id)
+    if kurir is None:
+        return err("Kurir tidak ditemukan", 404)
     hub = await session.get(Hub, batch.hub_id) if batch.hub_id else None
 
     data = _shipment_dict(s, paket)
@@ -485,6 +502,8 @@ async def get_tracking(shipment_id: int, session: AsyncSession = Depends(get_ses
         return err("Shipment tidak ditemukan", 404)
 
     paket = await session.get(Paket, s.paket_id)
+    if paket is None:
+        return err("Paket tidak ditemukan", 404)
     result = await session.execute(
         select(TrackingHistory)
         .where(TrackingHistory.shipment_id == s.id)
@@ -503,6 +522,10 @@ async def get_tracking(shipment_id: int, session: AsyncSession = Depends(get_ses
             "event": h.event,
             "keterangan": h.keterangan,
             "hub": _hub_dict(hub_map.get(h.hub_id)),
+            "recipient_name": h.recipient_name,
+            "latitude": h.latitude,
+            "longitude": h.longitude,
+            "photo_urls": h.photo_urls,
             "waktu": _dt(h.created_at),
         }
         for h in history_rows
@@ -533,6 +556,10 @@ async def create_history(
         event=payload.event,
         keterangan=payload.keterangan,
         hub_id=payload.hub_id,
+        recipient_name=payload.recipient_name,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        photo_urls=payload.photo_urls,
     )
     session.add(history)
     await session.commit()
@@ -544,6 +571,95 @@ async def create_history(
             "shipment_id": s.id,
             "event": history.event,
             "keterangan": history.keterangan,
+            "recipient_name": history.recipient_name,
+            "latitude": history.latitude,
+            "longitude": history.longitude,
+            "photo_urls": history.photo_urls,
+            "waktu": _dt(history.created_at),
+        },
+    )
+
+
+_POD_ALLOWED_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+    "image/gif",
+}
+_MAX_POD_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.post("/shipments/{shipment_id}/history/photo", status_code=201)
+async def upload_pod_photo(
+    shipment_id: int,
+    file: UploadFile = File(...),
+    recipient_name: str | None = Form(default=None),
+    latitude: float | None = Form(default=None),
+    longitude: float | None = Form(default=None),
+    keterangan: str | None = Form(default=None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Unggah foto POD ke Cloudinary lalu buat riwayat `pod_submitted` dalam
+    satu panggilan."""
+    s = await session.get(Shipment, shipment_id)
+    if s is None:
+        return err("Shipment tidak ditemukan", 404)
+
+    if not cloudinary_configured():
+        return err("Cloudinary belum dikonfigurasi (CLOUDINARY_* tidak terisi)", 503)
+
+    def _read(upload: UploadFile, label: str):
+        ctype = (upload.content_type or "").lower()
+        if ctype and ctype not in _POD_ALLOWED_TYPES:
+            return None, f"Tipe {label} tidak didukung: {ctype}"
+        data = upload.file.read()
+        if not data:
+            return None, f"{label} kosong"
+        if len(data) > _MAX_POD_FILE_BYTES:
+            return None, f"{label} terlalu besar (maks 10 MB)"
+        return data, None
+
+    photo_bytes, error = _read(file, "Foto")
+    if error:
+        return err(error, 415 if "didukung" in error else 400)
+
+    base_folder = f"{UPLOAD_FOLDER}/shipments/{shipment_id}"
+    try:
+        photo_url = upload_image(
+            photo_bytes,
+            f"{base_folder}/photo",
+            f"pod_{int(time.time())}_{uuid4().hex[:8]}",
+        )
+    except CloudinaryNotConfiguredError as e:
+        return err(str(e), 503)
+    except Exception as e:  # noqa: BLE001 - error upload diteruskan sebagai respons
+        return err(f"Upload Cloudinary gagal: {e}", 502)
+
+    history = TrackingHistory(
+        shipment_id=s.id,
+        event="pod_submitted",
+        keterangan=keterangan,
+        recipient_name=recipient_name,
+        latitude=latitude,
+        longitude=longitude,
+        photo_urls=[photo_url],
+    )
+    session.add(history)
+    await session.commit()
+
+    return ok(
+        "POD diunggah dan riwayat dibuat",
+        {
+            "id": history.id,
+            "shipment_id": s.id,
+            "event": history.event,
+            "keterangan": history.keterangan,
+            "recipient_name": history.recipient_name,
+            "latitude": history.latitude,
+            "longitude": history.longitude,
+            "photo_urls": history.photo_urls,
             "waktu": _dt(history.created_at),
         },
     )

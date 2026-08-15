@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cek Sistem - TEST2 Multi-Stop Delivery</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="delivery.css">
+</head>
+<body>
+<header>
+  <h1>TEST2 API Engine — Multi-Stop Delivery (Hub → Penerima)</h1>
+  <div class="badges">
+    <span class="badge" id="b-server">Server: ?</span>
+    <span class="badge" id="b-source">source: ?</span>
+    <span class="badge info">EXPRESS = merah/kuning</span>
+  </div>
+</header>
+<div id="notice"></div>
+<main>
+  <div id="map">
+    <div id="route-sheet" class="route-sheet">
+      <div class="sheet-header">
+        <span id="sheet-title">Urutan Stop</span>
+        <button type="button" id="sheet-close" class="sheet-close" title="Tutup">×</button>
+      </div>
+      <div id="sheet-list"></div>
+    </div>
+  </div>
+  <div id="toasts"></div>
+  <div id="panel">
+    <section>
+      <h2>1. Titik Hub</h2>
+      <div class="mode-row">
+        <label><input type="radio" name="mode" value="hub" checked><span>Klik = Hub</span></label>
+        <label><input type="radio" name="mode" value="deviate"><span>Klik = Deviasi Kurir</span></label>
+      </div>
+      <div class="row"><span>Hub origin</span><b id="txt-hub">-</b></div>
+      <div class="row"><span>Posisi kurir saat ini</span><b id="txt-pos">-</b></div>
+      <div class="coords" id="hub-hint">Klik peta untuk menetapkan Hub (drop point).</div>
+    </section>
+
+    <section>
+      <h2>2. Alamat Penerima</h2>
+      <textarea id="txt-deliveries" rows="7"
+        placeholder="Satu alamat per baris. Opsional format:&#10;alamat | EXPRESS&#10;alamat | REGULAR&#10;alamat&#10;Contoh:&#10;Jalan Sukun Raya No.09, Kudus | EXPRESS&#10;Jl. Bae-Besito, Gebog, Kudus"></textarea>
+      <label class="toggle-row">
+        <span class="toggle-switch"><input type="checkbox" id="chk-skip-traffic"><span class="slider"></span></span>
+        <span>Skip traffic (leg antar-stop cepat)</span>
+      </label>
+      <label class="toggle-row">
+        <span class="toggle-switch"><input type="checkbox" id="chk-return"><span class="slider"></span></span>
+        <span>Kembali ke hub (route tertutup)</span>
+      </label>
+      <button class="btn primary" id="btn-optimize" disabled>Optimasi Rute Pengantaran</button>
+    </section>
+
+    <section>
+      <h2>3. Navigasi Aktif</h2>
+      <div id="nav-controls" class="nav-controls" style="display:none;">
+        <div class="nav-status" id="nav-status">Stop 1 / N</div>
+        <div class="nav-card" id="nav-card">-</div>
+        <div class="coords" id="nav-geofence">Cek geofence…</div>
+        <button class="btn green" id="btn-deliver">Konfirmasi Terkirim</button>
+        <div class="coords">Deviasi: pilih "Klik = Deviasi Kurir", klik posisi kurir saat ini, lalu "Hitung Ulang Sisa".</div>
+        <button class="btn ghost" id="btn-recalc" disabled>Hitung Ulang Sisa Rute</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Hasil</h2>
+      <div id="result">
+        <div class="row"><span>Status</span><b id="r-status">-</b></div>
+        <div class="row"><span>Total jarak</span><b id="r-dist">-</b></div>
+        <div class="row"><span>Total durasi</span><b id="r-eta">-</b></div>
+        <div class="row"><span>Jumlah leg</span><b id="r-legs">-</b></div>
+        <div class="row"><span>Sumber peta</span><b id="r-source">-</b></div>
+        <div class="row"><span>Peringatan</span><b id="r-warning">-</b></div>
+      </div>
+      <button class="btn ghost" id="btn-reset" style="margin-top:8px;">Reset</button>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div id="log">Siap. Klik peta untuk Hub, isi alamat, lalu Optimasi...</div>
+    </section>
+
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <div class="loading-info">
+        <div id="loading-text">Menghubungi server...</div>
+        <div id="loading-time">0 dtk</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="delivery.js"></script>
+</body>
+</html>
