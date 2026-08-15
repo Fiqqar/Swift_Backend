@@ -196,7 +196,7 @@
 
   function drawRoute(payload) {
     if (routeLayer) map.removeLayer(routeLayer);
-    var coords = payload.route_coordinates || [];
+    var coords = decodePolyline(payload.route_coordinates || '');
     var group = L.layerGroup().addTo(map);
     var main = L.polyline(coords.map(function (p) { return [p[0], p[1]]; }), {
       color: '#0f6dc1', weight: 5, opacity: 0.85, pane: 'route'
@@ -235,7 +235,7 @@
   function showRouteInfoPopup(route) {
     clearRouteInfoPopups();
     if (!route) return;
-    var coords = route.route_coordinates || [];
+    var coords = decodePolyline(route.route_coordinates || '');
     if (!coords.length) return;
     var mid = coords[Math.floor(coords.length / 2)];
     if (!mid) return;
@@ -261,12 +261,14 @@
       var ll = [inc.location[0], inc.location[1]];
       var closed = inc.type === 'road_closure';
       var color = closed ? '#d81b1b' : '#f0741f';
-      if (inc.coordinates && inc.coordinates.length >= 2) {
-        var pts = inc.coordinates.map(function (p) { return [p[0], p[1]]; });
-        L.polyline(pts, {
-          color: color, weight: 6, opacity: 0.95,
-          dashArray: closed ? '8 6' : null, pane: 'traffic'
-        }).addTo(incidentLayer);
+      if (inc.coordinates) {
+        var pts = decodePolyline(inc.coordinates);
+        if (pts.length >= 2) {
+          L.polyline(pts, {
+            color: color, weight: 6, opacity: 0.95,
+            dashArray: closed ? '8 6' : null, pane: 'traffic'
+          }).addTo(incidentLayer);
+        }
       }
       var popup = L.popup({ autoClose: false, closeOnClick: false })
         .setLatLng(ll)
@@ -288,7 +290,7 @@
     if (!routeOptions.length) return;
     routeLayer = L.layerGroup().addTo(map);
     routeOptions.forEach(function (opt) {
-      var coords = opt.route_coordinates || [];
+      var coords = decodePolyline(opt.route_coordinates || '');
       var isBest = opt.is_best || opt.route_id === 1;
       var pts = coords.map(function (p) { return [p[0], p[1]]; });
       var poly = L.polyline(pts, {
@@ -391,7 +393,7 @@
       return;
     }
     segments.forEach(function (seg) {
-      var pts = seg.coordinates.map(function (p) { return [p[0], p[1]]; });
+      var pts = decodePolyline(seg.coordinates || '');
       var closed = seg.closure || seg.multiplier >= 4;
       L.polyline(pts, {
         color: trafficColor(seg.multiplier, seg.closure),
@@ -438,7 +440,7 @@
     var best = (data.routes && data.routes.length) ? data.routes[0] : data;
     $('r-status').textContent = data.status || '-';
     $('r-dist').textContent = best.total_distance_meters != null ? (best.total_distance_meters.toLocaleString('id-ID') + ' m') : '-';
-    $('r-points').textContent = best.route_coordinates ? best.route_coordinates.length : '-';
+    $('r-points').textContent = best.route_coordinates ? decodePolyline(best.route_coordinates).length : '-';
     $('r-eta').textContent = best.estimated_time_seconds != null ? formatEta(best.estimated_time_seconds) : '-';
     $('r-radius').textContent = data.graph_radius_meters != null ? ((data.graph_radius_meters / 1000).toLocaleString('id-ID') + ' km') : '-';
     $('r-traffic').textContent = best.traffic_segments ? (best.traffic_segments.length + ' segmen' + (data.routes ? ' · ' + data.routes.length + ' opsi' : '')) : '-';
@@ -486,7 +488,7 @@
       renderRouteResult(data);
       var best = (data.routes && data.routes.length) ? data.routes[0] : data;
       if (isPbf(data.source) || data.source === 'osm') {
-        log('Rute OK: ' + best.total_distance_meters.toLocaleString('id-ID') + ' m, ' + (data.routes ? data.routes.length + ' opsi, ' : '') + best.route_coordinates.length + ' titik (' + vehicleMode() + ', sumber=' + data.source + ')' + (data.warning ? ' - peringatan: ' + data.warning : ''));
+        log('Rute OK: ' + best.total_distance_meters.toLocaleString('id-ID') + ' m, ' + (data.routes ? data.routes.length + ' opsi, ' : '') + decodePolyline(best.route_coordinates || '').length + ' titik (' + vehicleMode() + ', sumber=' + data.source + ')' + (data.warning ? ' - peringatan: ' + data.warning : ''));
       } else {
         log('Rute dihitung tanpa data peta (offline)');
       }

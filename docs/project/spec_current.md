@@ -117,7 +117,7 @@ Urutan pemilihan algoritma:
 | `GET` | `/api/v1/traffic/penalties` | Daftar penalti terurut | 503 tanpa Redis |
 
 `RouteRequest`: `{origin:{latitude,longitude}, destination:{latitude,longitude}}`
-`RouteResponse`: `{status, total_distance_meters, route_coordinates: List[Tuple[float,float]], source, warning, graph_radius_meters}`
+`RouteResponse`: `{status, total_distance_meters, route_coordinates: EncodedPolyline (precision 5), source, warning, graph_radius_meters}`
 
 ---
 

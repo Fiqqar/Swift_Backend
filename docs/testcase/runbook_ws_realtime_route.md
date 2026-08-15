@@ -187,15 +187,33 @@ curl -X POST http://localhost:8000/api/v1/pathfinding/find-optimized-delivery-ro
 **Kriteria lulus:**
 
 - Status `200`.
-- `legs[0].geometry[0]` ≈ posisi yang dikirim via WS `(-6.8060, 110.8390)`
-  (setelah snapping ke jalan terdekat, selisihnya ≤ jarak snap maks),
-  **bukan** Hub Kudus `(-6.8048, 110.8385)`.
+- Titik pertama hasil-decode `legs[0].geometry` ≈ posisi yang dikirim via WS
+  `(-6.8060, 110.8390)` (setelah snapping ke jalan terdekat, selisihnya ≤ jarak
+  snap maks), **bukan** Hub Kudus `(-6.8048, 110.8385)`.
 - `stops` berisi semua stop (urutan TSP, EXPRESS didahulukan).
 
 Cek cepat dengan Python:
 
 ```python
 import httpx
+
+def decode_polyline(encoded, precision=5):
+    factor = 10 ** precision
+    coords, index, lat, lng = [], 0, 0, 0
+    def delta(i):
+        shift = result = 0
+        while True:
+            b = ord(encoded[i]) - 63; i += 1
+            result |= (b & 0x1F) << shift; shift += 5
+            if b < 0x20: break
+        return (~(result >> 1) if (result & 1) else (result >> 1)), i
+    while index < len(encoded):
+        dlat, index = delta(index)
+        dlng, index = delta(index)
+        lat += dlat; lng += dlng
+        coords.append((lat / factor, lng / factor))
+    return coords
+
 body = {"deliveries": [{"recipient_name": "Agus", "service_type": "REGULAR",
         "alamat": "Jl. Sukun Raya, Kudus",
         "latitude": -6.75346, "longitude": 110.84357},
@@ -206,7 +224,7 @@ body = {"deliveries": [{"recipient_name": "Agus", "service_type": "REGULAR",
 r = httpx.post("http://localhost:8000/api/v1/pathfinding/find-optimized-delivery-route",
                json=body, headers={"Authorization": "Bearer " + TOKEN})
 data = r.json()
-print("start leg 1:", data["legs"][0]["geometry"][0])   # harus ~(-6.8060, 110.8390)
+print("start leg 1:", decode_polyline(data["legs"][0]["geometry"])[0])  # harus ~(-6.8060, 110.8390)
 print("total km:", data["total_distance_km"], "| legs:", data["total_legs"])
 ```
 
@@ -248,8 +266,8 @@ curl -X POST http://localhost:8000/api/v1/pathfinding/find-optimized-delivery-ro
   }'
 ```
 
-**Kriteria lulus:** `200` dan `legs[0].geometry[0]` ≈ `(-6.8075, 110.8405)`
-(menang atas posisi Redis/hub).
+**Kriteria lulus:** `200` dan titik pertama hasil-decode `legs[0].geometry` ≈
+`(-6.8075, 110.8405)` (menang atas posisi Redis/hub).
 
 ## 8. Opsional — Push Geofence (Perlu Batch + Shipment Seed)
 
