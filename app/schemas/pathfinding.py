@@ -117,3 +117,15 @@ class OptimizedDeliveryRouteResponse(BaseModel):
     legs: List[OptimizedDeliveryLeg]
     source: str = "demo"
     warning: str | None = None
+
+
+class GeofenceCheckRequest(BaseModel):
+    current: Coordinate
+    target: Coordinate
+    radius_m: float = Field(default=30, gt=0)
+
+
+class GeofenceCheckResponse(BaseModel):
+    within_radius: bool
+    distance_m: float
+    radius_m: float

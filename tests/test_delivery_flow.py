@@ -40,6 +40,7 @@ from app.core.security import hash_password  # noqa: E402
 from app.main import app  # noqa: E402
 
 import httpx  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 
 def _rand():
@@ -97,15 +98,15 @@ async def _run():
                 "RETURNING id"))).scalar()
             p1 = (await conn.execute(text(
                 "INSERT INTO paket (nama, nomor_telepon, alamat, resi, "
-                "jenis_pengiriman, cod, harga, ongkir) "
-                "VALUES ('Pkt COD', :phone, 'Jl. Test 1', :resi, 'reguler', "
-                "true, 125000, 15000) RETURNING id"),
+                "jenis_pengiriman, service_type, cod, harga, ongkir) "
+                "VALUES ('Pkt COD', :phone, 'Jl. Test 1', :resi, 'express', "
+                "'EXPRESS', true, 125000, 15000) RETURNING id"),
                 {"phone": phone1, "resi": resi_a})).scalar()
             p2 = (await conn.execute(text(
                 "INSERT INTO paket (nama, nomor_telepon, alamat, resi, "
-                "jenis_pengiriman, cod, harga, ongkir) "
+                "jenis_pengiriman, service_type, cod, harga, ongkir) "
                 "VALUES ('Pkt Biasa', :phone, 'Jl. Test 2', :resi, 'reguler', "
-                "false, 0, 20000) RETURNING id"),
+                "'REGULAR', false, 0, 20000) RETURNING id"),
                 {"phone": phone1, "resi": resi_b})).scalar()
         ids.update(kurir_ids=[k1, k2], hub_id=hub_id, paket_ids=[p1, p2])
 
@@ -138,6 +139,8 @@ async def _run():
             sids = [s["shipment_id"] for s in body["shipments"]]
             ids.update(batch_ids=[bid], shipment_ids=sids)
             assert len(sids) == 2, sids
+            stypes = {s["paket"]["service_type"] for s in body["shipments"]}
+            assert stypes == {"EXPRESS", "REGULAR"}, stypes
 
             # kurir sama double batch -> 409
             r = await c.post("/api/v1/batches",
@@ -176,6 +179,85 @@ async def _run():
             assert r.status_code == 200, r.text
             events = [h["event"] for h in r.json()["data"]["history"]]
             assert "picked_up" in events and "delivered" in events, events
+
+            r = await c.post(f"/api/v1/shipments/{cod_sid}/history",
+                             json={"event": "pod_submitted",
+                                   "recipient_name": "Penerima Test",
+                                   "latitude": -6.8048, "longitude": 110.8385,
+                                   "photo_urls": [
+                                       "https://res.cloudinary.com/example/pod1.jpg",
+                                       "https://res.cloudinary.com/example/pod2.jpg"]})
+            assert r.status_code == 201, r.text
+            r = await c.get(f"/api/v1/shipments/{cod_sid}/tracking")
+            assert r.status_code == 200, r.text
+            pod = next((h for h in r.json()["data"]["history"]
+                        if h["event"] == "pod_submitted"), None)
+            assert pod is not None, r.text
+            assert pod["recipient_name"] == "Penerima Test", pod
+            assert len(pod["photo_urls"]) == 2, pod
+            assert pod["latitude"] == -6.8048, pod
+
+            # upload POD via Cloudinary (mock; tidak butuh credential asli)
+            fake_url = "https://res.cloudinary.com/test/pod-mock.jpg"
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True), \
+                 patch("app.api.v1.endpoints.shipments.upload_image",
+                       return_value=fake_url):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")},
+                    data={"recipient_name": "Budi",
+                          "latitude": "-6.8048", "longitude": "110.8385"})
+                assert r.status_code == 201, r.text
+                d = r.json()["data"]
+                assert d["event"] == "pod_submitted", d
+                assert d["photo_urls"] == [fake_url], d
+                assert d["recipient_name"] == "Budi", d
+                assert d["latitude"] == -6.8048, d
+
+            r = await c.get(f"/api/v1/shipments/{cod_sid}/tracking")
+            assert r.status_code == 200, r.text
+            pods = [h for h in r.json()["data"]["history"]
+                    if h["event"] == "pod_submitted"]
+            assert len(pods) == 2, pods
+            assert any(h["photo_urls"] == [fake_url] for h in pods), pods
+
+            # shipment tidak ada -> 404
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True):
+                r = await c.post(
+                    "/api/v1/shipments/999999/history/photo",
+                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")})
+                assert r.status_code == 404, r.text
+
+            # Cloudinary belum dikonfigurasi -> 503
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=False):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")})
+                assert r.status_code == 503, r.text
+
+            # tipe file tidak didukung -> 415
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files={"file": ("pod.txt", b"hello", "text/plain")})
+                assert r.status_code == 415, r.text
+
+            r = await c.post("/api/v1/pathfinding/geofence-check",
+                             json={"current": {"latitude": -6.2, "longitude": 106.8},
+                                   "target": {"latitude": -6.20001,
+                                              "longitude": 106.80001},
+                                   "radius_m": 30})
+            assert r.status_code == 200, r.text
+            assert r.json()["within_radius"] is True, r.text
+            r = await c.post("/api/v1/pathfinding/geofence-check",
+                             json={"current": {"latitude": -6.2, "longitude": 106.8},
+                                   "target": {"latitude": -6.21, "longitude": 106.81},
+                                   "radius_m": 30})
+            assert r.json()["within_radius"] is False, r.text
 
             r = await c.patch(f"/api/v1/shipments/{cod_sid}/cod",
                               json={"status": "remitted"})

@@ -252,6 +252,71 @@
     return state ? state.stops.slice(activeIndex) : [];
   }
 
+  var GEOFENCE_RADIUS_M = 30;
+  var geoOk = false;
+  var geoSeq = 0;
+
+  async function checkGeofence(s) {
+    var el = $('nav-geofence');
+    var seq = ++geoSeq;
+    $('btn-deliver').disabled = true;
+    if (!curPos || !s || s.latitude == null || s.longitude == null) {
+      geoOk = false;
+      if (seq === geoSeq) el.textContent = 'Geofence: lokasi stop tidak tersedia';
+      return;
+    }
+    el.textContent = 'Cek geofence…';
+    try {
+      var resp = await fetch('/api/v1/pathfinding/geofence-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current: { latitude: curPos[0], longitude: curPos[1] },
+          target: { latitude: s.latitude, longitude: s.longitude },
+          radius_m: GEOFENCE_RADIUS_M
+        }),
+        signal: AbortSignal.timeout(10000)
+      });
+      var data = await parseJson(resp);
+      if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
+      if (seq !== geoSeq) return;
+      geoOk = !!data.within_radius;
+      el.textContent = (data.within_radius ? '✅ Dalam radius geofence (' +
+        data.distance_m + ' m)' : '⛔ Di luar geofence (' + data.distance_m +
+        ' m > ' + GEOFENCE_RADIUS_M + ' m)');
+      el.style.color = data.within_radius ? '#1e7e34' : '#b3372f';
+      if (data.within_radius) $('btn-deliver').disabled = false;
+    } catch (err) {
+      if (seq !== geoSeq) return;
+      geoOk = false;
+      el.textContent = 'Geofence gagal: ' + ((err && err.message) ? err.message : String(err));
+      el.style.color = '#b3372f';
+    }
+  }
+
+  function renderNav(data) {
+    $('nav-controls').style.display = 'block';
+    var card = $('nav-card');
+    var leg = data.legs[activeIndex];
+    if (activeIndex >= data.stops.length) {
+      $('nav-status').textContent = 'Semua paket terkirim ✅';
+      card.textContent = 'Rute selesai.';
+      $('btn-deliver').disabled = true;
+      $('btn-recalc').disabled = true;
+      return;
+    }
+    var s = data.stops[activeIndex];
+    $('nav-status').textContent = 'Stop ' + (activeIndex + 1) + ' / ' + data.stops.length;
+    card.innerHTML = '<b>' + (s.recipient_name || ('Paket ' + (s.package_id || s.stop_order))) + '</b>'
+      + '<div>' + (s.service_type || '') + ' · '
+      + (leg.distance_km != null ? leg.distance_km + ' km' : '-') + ' · '
+      + (leg.duration_mins != null ? leg.duration_mins + ' mnt' : '-') + '</div>'
+      + '<div class="coords">' + s.latitude.toFixed(5) + ', ' + s.longitude.toFixed(5) + '</div>';
+    $('btn-deliver').disabled = true;
+    $('btn-recalc').disabled = !(deviating && curPos);
+    checkGeofence(s);
+  }
+
   function normalizeData(data, isRecalc) {
     if (isRecalc) {
       // hitung ulang: gabungkan sisa dengan hub_pos sebagai awal
@@ -385,6 +450,7 @@
       }).addTo(map).bindTooltip('Posisi kurir (deviasi)').openTooltip();
       $('txt-pos').textContent = fmt(curPos);
       log('Deviasi: kurir kini di ' + fmt(curPos));
+      if (state && activeIndex < state.stops.length) checkGeofence(state.stops[activeIndex]);
       if (state) $('btn-recalc').disabled = false;
     }
   });
@@ -394,6 +460,11 @@
 
   $('btn-deliver').addEventListener('click', function () {
     if (!state) return;
+    if (!geoOk) {
+      showNotice('Kurir belum berada dalam radius geofence (≤ ' + GEOFENCE_RADIUS_M + ' m) dari stop aktif.');
+      log('Konfirmasi ditolak: di luar radius geofence.');
+      return;
+    }
     if (activeIndex < state.stops.length) {
       activeIndex += 1;
       log('Paket dikonfirmasi terkirim. Lanjut ke stop ' + (activeIndex + 1) + '.');
@@ -408,12 +479,15 @@
   $('btn-reset').addEventListener('click', function () {
     hideLoading();
     hub = curPos = null; deviating = false; activeIndex = 0; state = null;
+    geoOk = false; geoSeq++;
     [hubMarker, posMarker].forEach(function (m) { if (m) map.removeLayer(m); });
     hubMarker = posMarker = null;
     clearMapLayers();
     $('nav-controls').style.display = 'none';
     $('txt-hub').textContent = '-'; $('txt-pos').textContent = '-';
     $('btn-optimize').disabled = true;
+    $('nav-geofence').textContent = 'Cek geofence…';
+    $('nav-geofence').style.color = '';
     $('r-status').textContent = '-'; $('r-dist').textContent = '-';
     $('r-eta').textContent = '-'; $('r-legs').textContent = '-';
     $('r-source').textContent = '-'; $('r-warning').textContent = '-';

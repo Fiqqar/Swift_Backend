@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Request
 from app.schemas.pathfinding import (
     Coordinate,
     DeliveryStop,
+    GeofenceCheckRequest,
+    GeofenceCheckResponse,
     OptimizedDeliveryLeg,
     OptimizedDeliveryRouteRequest,
     OptimizedDeliveryRouteResponse,
@@ -759,4 +761,22 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
         legs=legs,
         source=sources[0] if sources else "demo",
         warning="; ".join(dict.fromkeys(warnings)) or None,
+    )
+
+
+@router.post("/geofence-check", response_model=GeofenceCheckResponse)
+async def geofence_check(payload: GeofenceCheckRequest):
+    """Cek apakah posisi kurir berada dalam radius geofencing sebuah stop.
+
+    Menggunakan jarak haversine (straight-line). Default radius 30 meter
+    sesuai alur POD (Geofence Trigger Radius <= 30m).
+    """
+    d = haversine_distance(
+        (payload.current.latitude, payload.current.longitude),
+        (payload.target.latitude, payload.target.longitude),
+    )
+    return GeofenceCheckResponse(
+        within_radius=d <= payload.radius_m,
+        distance_m=round(d, 2),
+        radius_m=payload.radius_m,
     )

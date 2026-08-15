@@ -54,10 +54,46 @@ Sistem ini menghubungkan 3 entitas utama secara real-time:
 │                             DELIVERY EXECUTION                              │
 │  1. Driver navigates along active leg (Stop 1: Bold Blue)                   │
 │  2. Geofence Trigger (Radius ≤ 30m) -> Pop-up POD Validation Form           │
-│  3. Submit Photo & Signature:                                               │
-│     - PATCH /api/v1/shipments/{id}/status (Set to DELIVERED)              │
-│     - POST  /api/v1/shipments/{id}/history (Save Photo, Signature & GPS)   │
-│     - PATCH /api/v1/shipments/{id}/cod     (Update COD Cash Collected)    │
+│  3. Submit POD:                                                             │
+│     - PATCH /api/v1/shipments/{id}/status   (assigned -> picked_up ->      │
+│       delivered)                                                           │
+│     - POST  /api/v1/shipments/{id}/history/photo  (upload foto ke Cloudinary │
+│       server-side -> otomatis buat riwayat pod_submitted)                    │
+│     - PATCH /api/v1/shipments/{id}/cod      (collected -> remitted)        │
 │  4. UI auto-advances Active Index to Stop 2                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 📌 Catatan Implementasi
+
+1. **`service_type` (EXPRESS/REGULAR):** tersedia di kolom `Paket.service_type` (default `REGULAR`, backfill dari `jenis_pengiriman`). Payload pathfinding tetap menerima `service_type` per delivery.
+2. **Geofence Trigger (≤ 30m):** tersedia lewat `POST /api/v1/pathfinding/geofence-check` (haversine). UI demo delivery mengharuskan kurir dalam radius sebelum "Konfirmasi Terkirim".
+3. **POD Photo/GPS:** upload **server-side** lewat `POST /shipments/{id}/history/photo` (multipart `file` foto + opsional `recipient_name`, `latitude`, `longitude`, `keterangan`) → unggah ke Cloudinary (folder `pod/shipments/{id}/...`) lalu otomatis membuat riwayat `pod_submitted`. `POST /shipments/{id}/history` (JSON) tetap tersedia untuk alur manual dengan `photo_urls` (array URL Cloudinary — foto multiple). Kredensial dibaca dari env `CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET` (lihat `.env.example`).
+4. **Status shipment** memakai `assigned → picked_up → delivered` (plus `failed`/`returned`), bukan `PENDING → IN_TRANSIT → DELIVERED`.
+5. **COD:** status COD otomatis menjadi `collected` saat shipment di-set `delivered`; endpoint `PATCH /shipments/{id}/cod` hanya menandai `remitted` (membutuhkan status `collected` sebelumnya).
+
+---
+
+## ⚠️ Status Implementasi & Gap (checklist2.md)
+
+| # | Checklist | Status | Lokasi |
+|---|-----------|--------|--------|
+| 1.1 | DB persistence pada `POST /api/v1/batches` | ✅ Ada | `app/api/v1/endpoints/shipments.py:112` |
+| 1.2 | Relasi 1 Batch → Banyak Shipments | ✅ Ada | `app/models/shipment.py:13` (`batch_id` FK) |
+| 1.3 | Kolom `service_type` EXPRESS/REGULAR | ✅ Ada | `app/models/paket.py:17` + `init_db()` backfill |
+| 2.1 | Payload `hub_origin` + array `deliveries` | ✅ Ada | `app/schemas/pathfinding.py:78` |
+| 2.2 | TSP hybrid (Haversine + road routing) | ✅ Ada | `app/services/pathfinding/delivery_optimizer.py` |
+| 2.3 | Bobot prioritas Express (`0.6`) | ✅ Ada | `delivery_optimizer.py:14` |
+| 2.4 | Response `legs` + geometry + incidents | ✅ Ada | `app/schemas/pathfinding.py:88` |
+| 3.1 | `PATCH /shipments/{id}/status` | ✅ Ada | `app/api/v1/endpoints/shipments.py:398` |
+| 3.2 | POD foto/GPS di `POST /shipments/{id}/history` | ✅ Ada | `app/schemas/shipment.py:34` + `tracking_history.py` |
+| 3.4 | Upload Cloudinary server-side + buat history | ✅ Ada | `app/api/v1/endpoints/shipments.py` (`/history/photo`) + `app/services/cloudinary_service.py` |
+| 3.3 | `PATCH /shipments/{id}/cod` | ✅ Ada | `app/api/v1/endpoints/shipments.py:449` |
+| 4.1 | Geofence check radius ≤ 30m | ✅ Ada | `app/api/v1/endpoints/pathfinding.py` (`/geofence-check`) |
+
+### Langkah lanjutan yang disarankan
+
+- **Integrasi Frontend Mobile/Web:** hubungkan tombol "Mulai Navigasi" ke endpoint pathfinding dan alur POD (`PATCH status` → `POST history/photo` → `PATCH cod`) dengan token auth kurir.
+- **Roadmap:** upload foto ke Cloudinary kini server-side (endpoint `/history/photo`); isi `CLOUDINARY_*` di `.env` agar unggahan nyata berfungsi.
