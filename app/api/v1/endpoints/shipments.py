@@ -118,7 +118,15 @@ async def _get_shipments_map(session: AsyncSession, shipment_ids) -> dict:
 # --- Batch ---
 
 
-@router.post("/batches", status_code=201)
+@router.post("/batches", status_code=201, summary="Assign batch ke kurir",
+             description=(
+                 "Membuat batch baru dan men-assign beberapa paket ke satu "
+                 "kurir. Kurir harus aktif & belum punya batch aktif; paket "
+                 "tidak boleh punya shipment aktif.\n\n"
+                 "- **Wajib:** `paket_ids` (min 1), `kurir_id`.\n"
+                 "- **Opsional:** `hub_id`.\n"
+                 "- Error `404` kurir/hub/paket tidak ditemukan, `409` batch "
+                 "aktif duplikat atau paket sudah punya shipment aktif."))
 async def assign_batch(
     payload: BatchAssignRequest, session: AsyncSession = Depends(get_session)
 ):
@@ -204,7 +212,11 @@ async def assign_batch(
     )
 
 
-@router.get("/batches")
+@router.get("/batches", summary="Daftar batch",
+            description=(
+                "Menampilkan daftar batch dengan filter opsional.\n\n"
+                "- **Query opsional:** `status`, `kurir_id`, `hub_id`.\n"
+                "- Tidak memerlukan autentikasi."))
 async def list_batches(
     status: str | None = None,
     kurir_id: int | None = None,
@@ -259,7 +271,12 @@ async def list_batches(
     return ok(f"{len(data)} batch ditemukan", data)
 
 
-@router.get("/batches/{batch_id}")
+@router.get("/batches/{batch_id}", summary="Detail batch",
+            description=(
+                "Menampilkan detail batch termasuk kurir, hub, dan semua "
+                "shipment di dalamnya.\n\n"
+                "- **Path wajib:** `batch_id`.\n"
+                "- Error `404` bila batch tidak ditemukan."))
 async def get_batch(batch_id: int, session: AsyncSession = Depends(get_session)):
     batch = await session.get(Batch, batch_id)
     if batch is None:
@@ -293,7 +310,15 @@ async def get_batch(batch_id: int, session: AsyncSession = Depends(get_session))
     return ok("Detail batch berhasil diambil", data)
 
 
-@router.patch("/batches/{batch_id}/status")
+@router.patch("/batches/{batch_id}/status", summary="Update status batch",
+              description=(
+                  "Mengubah status batch dan meng-cascade ke semua shipment di "
+                  "dalamnya (menulis TrackingHistory).\n\n"
+                  "- **Path wajib:** `batch_id`.\n"
+                  "- **Body wajib:** `status` (`picked_up`/`delivered`/`returned`).\n"
+                  "- Transisi: `assigned → picked_up → delivered`, atau "
+                  "`returned` dari `assigned`/`picked_up`.\n"
+                  "- Error `404` batch tidak ditemukan, `409` transisi tidak valid."))
 async def update_batch_status(
     batch_id: int,
     payload: BatchStatusUpdate,
@@ -374,7 +399,13 @@ async def update_batch_status(
 # --- Shipment ---
 
 
-@router.get("/shipments")
+@router.get("/shipments", summary="Daftar shipment kurir",
+            description=(
+                "Menampilkan shipment milik kurir yang sedang login "
+                "(berdasarkan token JWT).\n\n"
+                "- **Wajib:** header `Authorization: Bearer <token>`.\n"
+                "- **Query opsional:** `status`, `batch_id`.\n"
+                "- Error `401` bila token tidak ada/tidak valid."))
 async def list_shipments(
     status: str | None = None,
     batch_id: int | None = None,
@@ -412,7 +443,11 @@ async def list_shipments(
     return ok(f"{len(data)} shipment ditemukan", data)
 
 
-@router.get("/shipments/{shipment_id}")
+@router.get("/shipments/{shipment_id}", summary="Detail shipment",
+            description=(
+                "Menampilkan detail shipment lengkap: paket, batch, kurir, hub.\n\n"
+                "- **Path wajib:** `shipment_id`.\n"
+                "- Error `404` bila shipment/batch/paket/kurir tidak ditemukan."))
 async def get_shipment(shipment_id: int, session: AsyncSession = Depends(get_session)):
     s = await session.get(Shipment, shipment_id)
     if s is None:
@@ -440,10 +475,20 @@ async def get_shipment(shipment_id: int, session: AsyncSession = Depends(get_ses
     return ok("Detail shipment berhasil diambil", data)
 
 
-@router.patch("/shipments/{shipment_id}/status")
+@router.patch("/shipments/{shipment_id}/status", summary="Update status shipment",
+              description=(
+                  "Mengubah status satu shipment dan menulis TrackingHistory. "
+                  "Saat `delivered`, COD otomatis menjadi `collected`, dan cache "
+                  "tracking kurir (stops/geofence) di-invalidasi.\n\n"
+                  "- **Path wajib:** `shipment_id`.\n"
+                  "- **Body wajib:** `status` (`picked_up`/`delivered`/`failed`/`returned`).\n"
+                  "- Transisi: `assigned → picked_up → delivered`, `failed` dari "
+                  "`picked_up`, `returned` dari `assigned`/`picked_up`.\n"
+                  "- Error `404` tidak ditemukan, `409` transisi tidak valid."))
 async def update_shipment_status(
     shipment_id: int,
     payload: ShipmentStatusUpdate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ):
     s = await session.get(Shipment, shipment_id)
@@ -488,10 +533,45 @@ async def update_shipment_status(
     )
     await session.commit()
 
+    await _invalidate_tracking_cache(request, s)
     return ok(f"Status shipment {shipment_id} menjadi {new}", {"shipment_id": s.id, "status": new})
 
 
-@router.patch("/shipments/{shipment_id}/cod")
+async def _invalidate_tracking_cache(request: Request, s: Shipment) -> None:
+    """Invalidasi cache tracking (stops & geofence) saat paket terkirim.
+
+    Mengikuti design doc courier_gps_tracking.md Bagian 6.4: saat shipment
+    `delivered`, hapus `driver:stops:{kurir_id}` dan
+    `driver:geofence:{kurir_id}:{package_id}` dari Redis.
+    """
+    if s.status != "delivered":
+        return
+    from app.core.database import SessionLocal
+    from app.services.tracking import del_geofence_state, del_stops_cache
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        return
+    try:
+        async with SessionLocal() as session:
+            batch = await session.get(Batch, s.batch_id)
+        if batch is None:
+            return
+        await del_stops_cache(redis, batch.kurir_id)
+        await del_geofence_state(redis, batch.kurir_id, s.paket_id)
+    except Exception as exc:
+        import logging
+        logging.getLogger("shipments").warning(
+            "Invalidasi cache tracking gagal shipment %s: %s", s.id, exc)
+
+
+@router.patch("/shipments/{shipment_id}/cod", summary="Tandai COD remitted",
+              description=(
+                  "Menandai COD shipment sebagai `remitted` (dana sudah disetor). "
+                  "Membutuhkan status COD `collected` sebelumnya (otomatis saat "
+                  "shipment delivered).\n\n"
+                  "- **Path wajib:** `shipment_id`.\n"
+                  "- **Body wajib:** `status` = `remitted`.\n"
+                  "- Error `404` tidak ditemukan, `409` bila COD belum collected."))
 async def update_cod(
     shipment_id: int,
     payload: CodUpdate,
@@ -509,7 +589,12 @@ async def update_cod(
     return ok("COD ditandai remitted", {"shipment_id": s.id, "cod": _cod_dict(s)})
 
 
-@router.patch("/shipments/{shipment_id}/billing")
+@router.patch("/shipments/{shipment_id}/billing", summary="Update status billing",
+              description=(
+                  "Menandai billing shipment sebagai `paid` atau `refunded`.\n\n"
+                  "- **Path wajib:** `shipment_id`.\n"
+                  "- **Body wajib:** `status` = `paid`/`refunded`.\n"
+                  "- Error `404` bila shipment tidak ditemukan."))
 async def update_billing(
     shipment_id: int,
     payload: BillingUpdate,
@@ -531,7 +616,12 @@ async def update_billing(
 # --- Tracking ---
 
 
-@router.get("/shipments/{shipment_id}/tracking")
+@router.get("/shipments/{shipment_id}/tracking", summary="Timeline tracking shipment",
+            description=(
+                "Menampilkan riwayat tracking (timeline event) untuk sebuah "
+                "shipment beserta data hub, penerima, koordinat, dan foto.\n\n"
+                "- **Path wajib:** `shipment_id`.\n"
+                "- Error `404` bila shipment/paket tidak ditemukan."))
 async def get_tracking(shipment_id: int, session: AsyncSession = Depends(get_session)):
     s = await session.get(Shipment, shipment_id)
     if s is None:
@@ -572,7 +662,14 @@ async def get_tracking(shipment_id: int, session: AsyncSession = Depends(get_ses
     )
 
 
-@router.post("/shipments/{shipment_id}/history", status_code=201)
+@router.post("/shipments/{shipment_id}/history", status_code=201, summary="Tambah event history",
+             description=(
+                 "Menambahkan event riwayat manual untuk sebuah shipment.\n\n"
+                 "- **Path wajib:** `shipment_id`.\n"
+                 "- **Body wajib:** `event` (`received_at_hub`/`departed_hub`/`pod_submitted`).\n"
+                 "- **Opsional:** `keterangan`, `hub_id`, `recipient_name`, "
+                 "`latitude`, `longitude`, `photo_urls` (array URL Cloudinary).\n"
+                 "- Error `404` bila shipment/hub tidak ditemukan."))
 async def create_history(
     shipment_id: int,
     payload: HistoryCreate,
@@ -627,7 +724,19 @@ _POD_ALLOWED_TYPES = {
 _MAX_POD_FILE_BYTES = 10 * 1024 * 1024
 
 
-@router.post("/shipments/{shipment_id}/history/photo", status_code=201)
+@router.post("/shipments/{shipment_id}/history/photo", status_code=201,
+             summary="Upload foto POD (multipart)",
+             description=(
+                 "Mengunggah foto POD ke Cloudinary lalu otomatis membuat "
+                 "riwayat event `pod_submitted` dalam satu panggilan (upload "
+                 "server-side).\n\n"
+                 "- **Path wajib:** `shipment_id`.\n"
+                 "- **Form wajib:** `file` (image: jpeg/png/webp/heic/heif/gif, "
+                 "maks 10 MB).\n"
+                 "- **Form opsional:** `recipient_name`, `latitude`, "
+                 "`longitude`, `keterangan`.\n"
+                 "- Error `415` tipe tidak didukung, `400` file kosong/terlalu "
+                 "besar, `503` Cloudinary belum dikonfigurasi, `502` upload gagal."))
 async def upload_pod_photo(
     shipment_id: int,
     file: UploadFile = File(...),
@@ -704,7 +813,10 @@ async def upload_pod_photo(
 # --- Kurir & Hub (untuk dropdown) ---
 
 
-@router.get("/kurir")
+@router.get("/kurir", summary="Daftar kurir aktif",
+            description=(
+                "Menampilkan semua kurir aktif. Berguna untuk memilih "
+                "`kurir_id` saat assign batch."))
 async def list_kurir(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
         select(Kurir).where(Kurir.is_active == True).order_by(Kurir.id)  # noqa: E712
@@ -713,7 +825,11 @@ async def list_kurir(session: AsyncSession = Depends(get_session)):
     return ok(f"{len(data)} kurir ditemukan", data)
 
 
-@router.get("/hubs")
+@router.get("/hubs", summary="Daftar hub aktif",
+            description=(
+                "Menampilkan semua hub aktif beserta koordinatnya. Berguna "
+                "untuk `hub_origin` di pathfinding dan `hub_id` saat assign "
+                "batch."))
 async def list_hubs(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
         select(Hub).where(Hub.is_active == True).order_by(Hub.id)  # noqa: E712

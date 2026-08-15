@@ -7,9 +7,7 @@
   "paths": {
     "/api/v1/pathfinding/find-route": {
       "post": {
-        "tags": [
-          "Pathfinding"
-        ],
+        "tags": ["Pathfinding"],
         "summary": "Find Route",
         "operationId": "find_route_api_v1_pathfinding_find_route_post",
         "requestBody": {
@@ -48,9 +46,7 @@
     },
     "/api/v1/pathfinding/find-route-options": {
       "post": {
-        "tags": [
-          "Pathfinding"
-        ],
+        "tags": ["Pathfinding"],
         "summary": "Find Route Options",
         "operationId": "find_route_options_api_v1_pathfinding_find_route_options_post",
         "requestBody": {
@@ -89,9 +85,7 @@
     },
     "/api/v1/traffic/update-weight": {
       "post": {
-        "tags": [
-          "Traffic"
-        ],
+        "tags": ["Traffic"],
         "summary": "Update Weight",
         "operationId": "update_weight_api_v1_traffic_update_weight_post",
         "requestBody": {
@@ -130,9 +124,7 @@
     },
     "/api/v1/traffic/penalties": {
       "get": {
-        "tags": [
-          "Traffic"
-        ],
+        "tags": ["Traffic"],
         "summary": "List Penalties",
         "operationId": "list_penalties_api_v1_traffic_penalties_get",
         "responses": {
@@ -151,9 +143,7 @@
     },
     "/api/v1/traffic/status": {
       "get": {
-        "tags": [
-          "Traffic"
-        ],
+        "tags": ["Traffic"],
         "summary": "Traffic Status",
         "operationId": "traffic_status_api_v1_traffic_status_get",
         "responses": {
@@ -172,9 +162,7 @@
     },
     "/api/v1/traffic/map": {
       "get": {
-        "tags": [
-          "Traffic"
-        ],
+        "tags": ["Traffic"],
         "summary": "Traffic Map",
         "operationId": "traffic_map_api_v1_traffic_map_get",
         "responses": {
@@ -193,10 +181,7 @@
     },
     "/api/v1/auth/login": {
       "post": {
-        "tags": [
-          "Auth",
-          "Auth"
-        ],
+        "tags": ["Auth", "Auth"],
         "summary": "Login",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
@@ -233,10 +218,7 @@
     },
     "/api/v1/auth/me": {
       "get": {
-        "tags": [
-          "Auth",
-          "Auth"
-        ],
+        "tags": ["Auth", "Auth"],
         "summary": "Me",
         "operationId": "me_api_v1_auth_me_get",
         "responses": {
@@ -253,10 +235,7 @@
     },
     "/api/v1/batches": {
       "post": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Assign Batch",
         "operationId": "assign_batch_api_v1_batches_post",
         "requestBody": {
@@ -291,10 +270,7 @@
         }
       },
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "List Batches",
         "operationId": "list_batches_api_v1_batches_get",
         "parameters": [
@@ -371,10 +347,7 @@
     },
     "/api/v1/batches/{batch_id}": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Get Batch",
         "operationId": "get_batch_api_v1_batches__batch_id__get",
         "parameters": [
@@ -412,10 +385,7 @@
     },
     "/api/v1/batches/{batch_id}/status": {
       "patch": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Update Batch Status",
         "operationId": "update_batch_status_api_v1_batches__batch_id__status_patch",
         "parameters": [
@@ -463,10 +433,7 @@
     },
     "/api/v1/shipments": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "List Shipments",
         "operationId": "list_shipments_api_v1_shipments_get",
         "parameters": [
@@ -543,10 +510,7 @@
     },
     "/api/v1/shipments/{shipment_id}": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Get Shipment",
         "operationId": "get_shipment_api_v1_shipments__shipment_id__get",
         "parameters": [
@@ -584,10 +548,7 @@
     },
     "/api/v1/shipments/{shipment_id}/status": {
       "patch": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Update Shipment Status",
         "operationId": "update_shipment_status_api_v1_shipments__shipment_id__status_patch",
         "parameters": [
@@ -635,10 +596,7 @@
     },
     "/api/v1/shipments/{shipment_id}/cod": {
       "patch": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Update Cod",
         "operationId": "update_cod_api_v1_shipments__shipment_id__cod_patch",
         "parameters": [
@@ -686,10 +644,7 @@
     },
     "/api/v1/shipments/{shipment_id}/billing": {
       "patch": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Update Billing",
         "operationId": "update_billing_api_v1_shipments__shipment_id__billing_patch",
         "parameters": [
@@ -737,10 +692,7 @@
     },
     "/api/v1/shipments/{shipment_id}/tracking": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Get Tracking",
         "operationId": "get_tracking_api_v1_shipments__shipment_id__tracking_get",
         "parameters": [
@@ -778,10 +730,7 @@
     },
     "/api/v1/shipments/{shipment_id}/history": {
       "post": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "Create History",
         "operationId": "create_history_api_v1_shipments__shipment_id__history_post",
         "parameters": [
@@ -829,10 +778,7 @@
     },
     "/api/v1/kurir": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "List Kurir",
         "operationId": "list_kurir_api_v1_kurir_get",
         "responses": {
@@ -849,10 +795,7 @@
     },
     "/api/v1/hubs": {
       "get": {
-        "tags": [
-          "Shipment",
-          "Shipment"
-        ],
+        "tags": ["Shipment", "Shipment"],
         "summary": "List Hubs",
         "operationId": "list_hubs_api_v1_hubs_get",
         "responses": {
@@ -916,45 +859,31 @@
           }
         },
         "type": "object",
-        "required": [
-          "paket_ids",
-          "kurir_id"
-        ],
+        "required": ["paket_ids", "kurir_id"],
         "title": "BatchAssignRequest"
       },
       "BatchStatusUpdate": {
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "picked_up",
-              "delivered",
-              "returned"
-            ],
+            "enum": ["picked_up", "delivered", "returned"],
             "title": "Status"
           }
         },
         "type": "object",
-        "required": [
-          "status"
-        ],
+        "required": ["status"],
         "title": "BatchStatusUpdate"
       },
       "BillingUpdate": {
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "paid",
-              "refunded"
-            ],
+            "enum": ["paid", "refunded"],
             "title": "Status"
           }
         },
         "type": "object",
-        "required": [
-          "status"
-        ],
+        "required": ["status"],
         "title": "BillingUpdate"
       },
       "CodUpdate": {
@@ -966,9 +895,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "status"
-        ],
+        "required": ["status"],
         "title": "CodUpdate"
       },
       "Coordinate": {
@@ -987,10 +914,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "latitude",
-          "longitude"
-        ],
+        "required": ["latitude", "longitude"],
         "title": "Coordinate"
       },
       "HTTPValidationError": {
@@ -1010,10 +934,7 @@
         "properties": {
           "event": {
             "type": "string",
-            "enum": [
-              "received_at_hub",
-              "departed_hub"
-            ],
+            "enum": ["received_at_hub", "departed_hub"],
             "title": "Event"
           },
           "keterangan": {
@@ -1041,9 +962,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "event"
-        ],
+        "required": ["event"],
         "title": "HistoryCreate"
       },
       "LoginRequest": {
@@ -1088,12 +1007,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "edge_id",
-          "multiplier",
-          "closure",
-          "coordinates"
-        ],
+        "required": ["edge_id", "multiplier", "closure", "coordinates"],
         "title": "MapSegment"
       },
       "PenaltiesResponse": {
@@ -1107,9 +1021,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "penalties"
-        ],
+        "required": ["penalties"],
         "title": "PenaltiesResponse"
       },
       "PenaltyEntry": {
@@ -1124,10 +1036,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "edge_id",
-          "multiplier"
-        ],
+        "required": ["edge_id", "multiplier"],
         "title": "PenaltyEntry"
       },
       "ProviderStatus": {
@@ -1142,20 +1051,14 @@
           }
         },
         "type": "object",
-        "required": [
-          "name",
-          "active"
-        ],
+        "required": ["name", "active"],
         "title": "ProviderStatus"
       },
       "RouteIncident": {
         "properties": {
           "type": {
             "type": "string",
-            "enum": [
-              "road_closure",
-              "congestion"
-            ],
+            "enum": ["road_closure", "congestion"],
             "title": "Type"
           },
           "location": {
@@ -1223,11 +1126,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "type",
-          "location",
-          "description"
-        ],
+        "required": ["type", "location", "description"],
         "title": "RouteIncident"
       },
       "RouteOption": {
@@ -1372,11 +1271,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "status",
-          "total_route",
-          "routes"
-        ],
+        "required": ["status", "total_route", "routes"],
         "title": "RouteOptionsResponse"
       },
       "RouteRequest": {
@@ -1391,11 +1286,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "enum": [
-                  "motorcycle",
-                  "car",
-                  "truck"
-                ]
+                "enum": ["motorcycle", "car", "truck"]
               },
               {
                 "type": "null"
@@ -1427,10 +1318,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "origin",
-          "destination"
-        ],
+        "required": ["origin", "destination"],
         "title": "RouteRequest"
       },
       "RouteResponse": {
@@ -1520,30 +1408,19 @@
           }
         },
         "type": "object",
-        "required": [
-          "status",
-          "total_distance_meters",
-          "route_coordinates"
-        ],
+        "required": ["status", "total_distance_meters", "route_coordinates"],
         "title": "RouteResponse"
       },
       "ShipmentStatusUpdate": {
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "picked_up",
-              "delivered",
-              "failed",
-              "returned"
-            ],
+            "enum": ["picked_up", "delivered", "failed", "returned"],
             "title": "Status"
           }
         },
         "type": "object",
-        "required": [
-          "status"
-        ],
+        "required": ["status"],
         "title": "ShipmentStatusUpdate"
       },
       "TrafficMapResponse": {
@@ -1568,9 +1445,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "segments"
-        ],
+        "required": ["segments"],
         "title": "TrafficMapResponse"
       },
       "TrafficRouteSegment": {
@@ -1592,11 +1467,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "start_index",
-          "end_index",
-          "multiplier"
-        ],
+        "required": ["start_index", "end_index", "multiplier"],
         "title": "TrafficRouteSegment"
       },
       "TrafficStatusResponse": {
@@ -1668,11 +1539,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
+        "required": ["loc", "msg", "type"],
         "title": "ValidationError"
       },
       "WeightAck": {
@@ -1691,11 +1558,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "status",
-          "edge_id",
-          "multiplier"
-        ],
+        "required": ["status", "edge_id", "multiplier"],
         "title": "WeightAck"
       },
       "WeightUpdate": {
@@ -1711,10 +1574,7 @@
           }
         },
         "type": "object",
-        "required": [
-          "edge_id",
-          "multiplier"
-        ],
+        "required": ["edge_id", "multiplier"],
         "title": "WeightUpdate"
       }
     }

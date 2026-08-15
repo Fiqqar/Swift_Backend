@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
@@ -296,8 +297,14 @@ app = FastAPI(
             "name": "Traffic",
             "description": "Peta kepadatan dan status lalu lintas.",
         },
+        {
+            "name": "Tracking",
+            "description": "Real-time tracking posisi kurir (WebSocket) dan "
+                           "status live-tracking.",
+        },
     ],
     lifespan=lifespan,
+    docs_url=None,
 )
 
 app.add_middleware(
@@ -307,6 +314,227 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_OPENAPI_SCHEMA = None
+
+
+def _openapi():
+    global _OPENAPI_SCHEMA
+    if _OPENAPI_SCHEMA is not None:
+        return _OPENAPI_SCHEMA
+    schema = FastAPI.openapi(app)
+    schema.setdefault("components", {}).setdefault(
+        "securitySchemes", {})["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "Masukkan token dari endpoint `POST /api/v1/auth/login`. "
+            "Contoh: `POST /api/v1/auth/login` dengan body "
+            "`{\"username\": \"...\", \"password\": \"...\"}` lalu salin token "
+            "`access_token` dari respons."
+        ),
+    }
+    schema.setdefault("security", []).insert(
+        0, {"BearerAuth": []})
+    schema.setdefault("paths", {})["/api/v1/ws/driver/position"] = {
+        "get": {
+            "tags": ["Tracking"],
+            "summary": "WS Real-time posisi kurir (WebSocket)",
+            "description": (
+                "**PENTING — JANGAN tekan \"Try it out\".**\n\n"
+                "Endpoint ini adalah **WebSocket**, bukan HTTP biasa. Route "
+                "hanya menanggapi handshake `ws://`/`wss://`. Jika diuji lewat "
+                "tombol \"Try it out\", Postman request HTTP, atau dibuka di "
+                "browser, akan muncul **404 Not Found** — itu **normal dan "
+                "diharapkan**, karena tidak ada route HTTP di path ini.\n\n"
+                "### Prasyarat pengujian\n"
+                "1. Aktifkan fitur: set `ENABLE_LIVE_TRACKING=1` di `.env` lalu "
+                "restart server. Tanpa ini handshake WS berhasil tetapi koneksi "
+                "langsung ditutup kode `1008`.\n"
+                "2. Ambil token: `POST /api/v1/auth/login` → salin `data.token` "
+                "dari respons.\n"
+                "3. Verifikasi status: `GET /api/v1/ws/driver/position/status` "
+                "harus mengembalikan `{\"enabled\": true}`.\n\n"
+                "### URL\n"
+                "`ws://localhost:8000/api/v1/ws/driver/position`\n\n"
+                "### Cara konek (klien WebSocket, bukan HTTP)\n"
+                "- **wscat:** `wscat -c "
+                "\"ws://localhost:8000/api/v1/ws/driver/position?token=<JWT>\"`\n"
+                "- **Python:** `uv run python -m websockets "
+                "\"ws://localhost:8000/api/v1/ws/driver/position?token=<JWT>\"`\n"
+                "- **Postman:** New → WebSocket Request → "
+                "`ws://localhost:8000/api/v1/ws/driver/position`, isi query "
+                "`token` atau header `Authorization: Bearer <JWT>`.\n\n"
+                "### Autentikasi (handshake)\n"
+                "- Query param `?token=<JWT>` **atau** header "
+                "`Authorization: Bearer <JWT>` (token dari "
+                "`POST /api/v1/auth/login`).\n"
+                "- Gagal auth → server tutup koneksi kode `4401`.\n"
+                "- Bila `ENABLE_LIVE_TRACKING=0` → tutup kode `1008`.\n\n"
+                "### Pesan dari klien\n"
+                "- `{\"type\":\"ping\"}` → server balas "
+                "`{\"type\":\"ack\",\"ok\":true,\"ts\":<unix>}`.\n"
+                "- `{\"type\":\"position\",\"lat\":-6.80,\"lon\":110.83,"
+                "\"bearing\":90,\"speed\":10}` → simpan ke Redis "
+                "`driver:pos:{kurir_id}`, snap best-effort, cek geofence.\n\n"
+                "### Pesan dari server\n"
+                "- `{\"type\":\"ack\",\"ok\":true,\"snapped\":[lat,lon]|null,"
+                "\"ts\":<unix>}` — posisi diterima.\n"
+                "- `{\"type\":\"error\",\"ok\":false,\"detail\":\"...\"}` — "
+                "JSON/koordinat tidak valid.\n"
+                "- `{\"type\":\"geofence_enter\",\"package_id\":1,"
+                "\"distance_m\":12.5,\"radius_m\":30}` — masuk radius stop.\n"
+                "- `{\"type\":\"geofence_exit\",\"package_id\":1,"
+                "\"distance_m\":45.2,\"radius_m\":30}` — keluar radius stop.\n\n"
+                "### Keterbatasan\n"
+                "- Rate limit `KURIR_POS_MAX_RATE_SECONDS` (default 3 s) per "
+                "koneksi.\n"
+                "- Geofence: radius 30 m; state machine per paket di Redis "
+                "`driver:geofence:{kurir_id}:{package_id}` (event hanya dikirim "
+                "saat transisi state)."
+            ),
+            "security": [{"BearerAuth": []}],
+            "responses": {
+                "200": {"description": "Koneksi WebSocket berlangsung"}
+            },
+        }
+    }
+    _OPENAPI_SCHEMA = schema
+    return schema
+
+
+app.openapi = _openapi
+
+
+_POSTMAN_BUTTON = """
+<style>
+  #postman-export-btn {
+    position: fixed;
+    top: 84px;
+    right: 20px;
+    z-index: 9999;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: none;
+    border-radius: 4px;
+    background: #ff6c37;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: sans-serif;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  }
+  #postman-export-btn:hover { background: #e65a28; }
+  #postman-toast {
+    position: fixed;
+    top: 130px;
+    right: 20px;
+    z-index: 10000;
+    max-width: 320px;
+    padding: 10px 14px;
+    border-radius: 4px;
+    background: #323232;
+    color: #fff;
+    font-size: 12px;
+    font-family: sans-serif;
+    line-height: 1.4;
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    opacity: 0;
+    transition: opacity .25s ease;
+    pointer-events: none;
+  }
+  #postman-toast.show { opacity: 1; }
+</style>
+<button id="postman-export-btn" type="button">
+  Export to Postman
+</button>
+<div id="postman-toast"></div>
+<script>
+  (function () {
+    var btn = document.getElementById("postman-export-btn");
+    var toast = document.getElementById("postman-toast");
+    function showToast(msg, isError) {
+      toast.textContent = msg;
+      toast.style.background = isError ? "#c62828" : "#323232";
+      toast.classList.add("show");
+      setTimeout(function () { toast.classList.remove("show"); }, 6000);
+    }
+    function downloadJson(url, filename) {
+      return fetch(url)
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        })
+        .then(function (data) {
+          var blob = new Blob(
+            [JSON.stringify(data, null, 2)],
+            { type: "application/json" }
+          );
+          var objUrl = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = objUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(objUrl);
+        });
+    }
+    btn.addEventListener("click", function () {
+      Promise.all([
+        downloadJson("/api/v1/export/postman", "postman_collection.json"),
+        downloadJson("/api/v1/export/postman/environment", "dev.postman_environment.json")
+      ])
+        .then(function () {
+          showToast(
+            "postman_collection.json + dev.postman_environment.json diunduh. " +
+            "Di Postman: Import → File → pilih keduanya. " +
+            "Jalankan POST /auth/login dulu, token tersimpan otomatis."
+          );
+        })
+        .catch(function (err) {
+          showToast("Export gagal: " + err.message, true);
+        });
+    });
+  })();
+</script>
+"""
+
+
+@app.get("/api/v1/export/postman", include_in_schema=False)
+async def export_postman_collection():
+    from app.services.postman_export import build_postman_collection
+    return JSONResponse(
+        build_postman_collection(app.openapi()),
+        headers={"Content-Disposition": 'attachment; filename="postman_collection.json"'},
+    )
+
+
+@app.get("/api/v1/export/postman/environment", include_in_schema=False)
+async def export_postman_environment():
+    from app.services.postman_export import build_dev_environment
+    return JSONResponse(
+        build_dev_environment(),
+        headers={"Content-Disposition": 'attachment; filename="dev.postman_environment.json"'},
+    )
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui():
+    html = get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+        swagger_ui_parameters={"persistAuthorization": True},
+    )
+    content = html.body.decode("utf-8")
+    content = content.replace("</body>", _POSTMAN_BUTTON + "</body>")
+    return HTMLResponse(content)
 
 
 @app.exception_handler(HTTPException)
