@@ -21,7 +21,14 @@ def _kurir_data(kurir: Kurir) -> dict:
     }
 
 
-@router.post("/login")
+@router.post("/login", summary="Login kurir",
+             description=(
+                 "Autentikasi kurir dengan `username` + `password`. "
+                 "Mengembalikan token JWT yang dipakai sebagai "
+                 "`Authorization: Bearer <token>` untuk endpoint yang "
+                 "membutuhkan autentikasi kurir (mis. `GET /api/v1/shipments`).\n\n"
+                 "- **Wajib:** `username`, `password` (tidak boleh kosong).\n"
+                 "- Error `401` bila kredensial salah, `422` bila kosong."))
 async def login(payload: LoginRequest, session: AsyncSession = Depends(get_session)):
     username = (payload.username or "").strip()
     if not username or not payload.password:
@@ -38,7 +45,12 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
     return ok("Login berhasil", {"token": token, "kurir": _kurir_data(kurir)})
 
 
-@router.get("/me")
+@router.get("/me", summary="Profil kurir dari token",
+            description=(
+                "Mengambil data kurir aktif berdasarkan token JWT pada header "
+                "`Authorization: Bearer <token>`.\n\n"
+                "- **Wajib:** header `Authorization: Bearer <token>`.\n"
+                "- Error `401` bila token tidak ada/tidak valid/akun nonaktif."))
 async def me(request: Request, session: AsyncSession = Depends(get_session)):
     kurir, error = await current_kurir_or_error(request, session)
     if error:

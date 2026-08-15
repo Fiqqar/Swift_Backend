@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import math
 import os
@@ -61,6 +62,7 @@ from app.services.pathfinding.route_options import (
     route_incidents,
     route_summary,
 )
+from app.services.tracking import get_kurir_position_latlon
 from app.services.traffic.smart_hybrid import get_request_penalties
 
 router = APIRouter()
@@ -93,6 +95,8 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
 
+_DELIVERY_LEG_CONCURRENCY = max(1, _env_int("DELIVERY_LEG_CONCURRENCY", 5))
+
 
 def last_mile_enabled(payload) -> bool:
     if payload.last_mile_precision is not None:
@@ -108,6 +112,131 @@ def dynamic_rerouting_enabled(payload) -> bool:
 
 def live_tracking_enabled() -> bool:
     return _env_bool("ENABLE_LIVE_TRACKING", False)
+
+
+def _token_kurir_id(request: Request) -> int | None:
+    """Ekstrak kurir_id dari token JWT (Authorization Bearer) bila ada."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    from app.core.security import decode_access_token
+    payload = decode_access_token(auth[7:])
+    if payload is None:
+        return None
+    try:
+        return int(payload["sub"])
+    except (KeyError, ValueError):
+        return None
+
+
+async def _resolve_delivery_start(request: Request, redis,
+                                  payload) -> tuple[float, float]:
+    """Hirarki fallback titik awal rute (design doc Bagian 6.1).
+
+    1. Prioritas 1: `courier_position` dari payload request (eksplisit).
+    2. Prioritas 2: posisi kurir terbaru dari Redis `driver:pos:{kurir_id}`
+       (kurir_id dari token JWT yang aktif).
+    3. Prioritas 3: `hub_origin` (perilaku eksisting).
+    """
+    if payload.courier_position is not None:
+        return (payload.courier_position.latitude,
+                payload.courier_position.longitude)
+
+    kurir_id = _token_kurir_id(request)
+    if kurir_id is not None:
+        pos = await get_kurir_position_latlon(redis, kurir_id)
+        if pos is not None:
+            return pos
+
+    if payload.hub_origin is not None:
+        return (payload.hub_origin.latitude, payload.hub_origin.longitude)
+
+    if kurir_id is None:
+        detail = (
+            "Titik awal rute tidak tersedia: header `Authorization: Bearer "
+            "<token>` kurir tidak ada/tidak valid, posisi Redis tidak bisa "
+            "dibaca, dan `hub_origin` tidak diberikan."
+        )
+    else:
+        detail = (
+            "Titik awal rute tidak tersedia: posisi kurir %s tidak ditemukan "
+            "di Redis (kirim posisi via WebSocket `WS "
+            "/api/v1/ws/driver/position`) dan `hub_origin` tidak diberikan."
+            % kurir_id
+        )
+    raise HTTPException(status_code=400, detail=detail)
+
+
+async def _process_single_leg(app, redis, semaphore, leg_index: int,
+                              stop: dict, prev_coord: tuple,
+                              mode: str, last_mile, need_nodes: bool,
+                              payload, incident_delay_minutes: float,
+                              speed_kmh: float,
+                              eta_graph, eta_locations) -> dict:
+    """Proses satu leg rute (A* + TomTom + ETA) secara independen.
+
+    Dijalankan paralel dengan konkurrensi dibatasi `semaphore`. Mengembalikan
+    dict hasil leg; melempar HTTPException bila plan/area atau rute gagal.
+    """
+    from app.services.traffic.eta import compute_eta
+
+    dest = stop["coordinate"]
+    async with semaphore:
+        try:
+            plan = await run_in_threadpool(
+                _resolve_plan, app,
+                prev_coord[0], prev_coord[1], dest[0], dest[1])
+        except AreaNotCoveredError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        leg_payload = RouteRequest(
+            origin=Coordinate(latitude=prev_coord[0], longitude=prev_coord[1]),
+            destination=Coordinate(latitude=dest[0], longitude=dest[1]),
+            mode=mode,
+            last_mile_precision=last_mile,
+            dynamic_rerouting=payload.dynamic_rerouting,
+        )
+        traffic_penalties = {}
+        if not payload.skip_traffic:
+            traffic_penalties = await get_request_penalties(
+                app, redis, prev_coord, dest)
+        response, node_sequence, final_penalties, _m = await _best_route(
+            app, plan, redis, traffic_penalties, leg_payload, mode,
+            prev_coord[0], prev_coord[1], dest[0], dest[1],
+            need_nodes=need_nodes, skip_traffic=payload.skip_traffic)
+        if response is None:
+            raise HTTPException(status_code=404,
+                                detail="Rute tidak ditemukan ke stop "
+                                       f"{stop['recipient_name'] or stop['package_id']}")
+
+        distance_m = _physical_distance(response.route_coordinates)
+        eta_s = response.estimated_time_seconds
+        if eta_s is None:
+            eta_s = compute_eta(eta_graph, eta_locations,
+                                response.route_coordinates, final_penalties)
+        incidents = route_incidents(
+            node_sequence or [], response.route_coordinates,
+            final_penalties, speed_kmh, incident_delay_minutes)
+        leg = OptimizedDeliveryLeg(
+            leg_index=leg_index,
+            stop_sequence_number=leg_index + 1,
+            package_id=stop["package_id"],
+            recipient_name=stop["recipient_name"],
+            service_type=stop["service_type"],
+            geometry=response.route_coordinates,
+            distance_km=round(distance_m / 1000.0, 2),
+            duration_mins=round((eta_s or 0.0) / 60.0, 1),
+            estimated_time_seconds=eta_s,
+            traffic_segments=_traffic_segments(node_sequence, final_penalties),
+            incidents=incidents,
+        )
+        return {
+            "leg": leg,
+            "distance_m": distance_m,
+            "duration_s": eta_s or 0.0,
+            "warning": response.warning,
+            "source": response.source,
+        }
 
 
 def _blocked_edge_ids(penalties: dict | None) -> set:
@@ -470,7 +599,16 @@ async def _best_route(app, plan, redis, traffic_penalties,
     return response, node_sequence, final_penalties, mode
 
 
-@router.post("/find-route", response_model=RouteResponse)
+@router.post("/find-route", response_model=RouteResponse,
+             summary="Hitung rute terbaik antara dua titik",
+             description=(
+                 "Menghitung rute optimal (distance + ETA) dari `origin` ke "
+                 "`destination`.\n\n"
+                 "- **Wajib:** `origin`, `destination` (Coordinate).\n"
+                 "- **Opsional:** `mode` (motorcycle/car/truck), "
+                 "`last_mile_precision`, `dynamic_rerouting`.\n\n"
+                 "Error: `400` di luar jangkauan peta, `404` rute tidak "
+                 "ditemukan, `500` gagal memuat peta."))
 async def find_route(payload: RouteRequest, request: Request):
     lat1, lon1 = payload.origin.latitude, payload.origin.longitude
     lat2, lon2 = payload.destination.latitude, payload.destination.longitude
@@ -535,7 +673,16 @@ def _route_option(route_id: int, response, node_sequence,
     )
 
 
-@router.post("/find-route-options", response_model=RouteOptionsResponse)
+@router.post("/find-route-options", response_model=RouteOptionsResponse,
+             summary="Hitung beberapa alternatif rute",
+             description=(
+                 "Menghitung rute terbaik + alternatif (dengan penalti untuk "
+                 "menghindari overlap) antara `origin` dan `destination`.\n\n"
+                 "- **Wajib:** `origin`, `destination`.\n"
+                 "- **Opsional:** `mode`, `last_mile_precision`, "
+                 "`dynamic_rerouting`.\n\n"
+                 "Jumlah alternatif dikontrol env `ALTERNATIVE_ROUTES_MAX` "
+                 "(default 3)."))
 async def find_route_options(payload: RouteRequest, request: Request):
     lat1, lon1 = payload.origin.latitude, payload.origin.longitude
     lat2, lon2 = payload.destination.latitude, payload.destination.longitude
@@ -607,7 +754,27 @@ async def find_route_options(payload: RouteRequest, request: Request):
 
 
 @router.post("/find-optimized-delivery-route",
-             response_model=OptimizedDeliveryRouteResponse)
+             response_model=OptimizedDeliveryRouteResponse,
+             summary="Rute pengantaran multi-stop (TSP)",
+             description=(
+                 "Menentukan urutan stop paling efisien (TSP heuristic, EXPRESS "
+                 "diutamakan) lalu menghitung leg rute sungguhan per pasangan stop.\n\n"
+                 "- **Wajib:** `deliveries` (minimal 1).\n"
+                 "- **Titik awal (fallback chain):** `courier_position` "
+                 "(prioritas 1) → posisi kurir dari Redis `driver:pos:{kurir_id}` "
+                 "(prioritas 2, dari token JWT) → `hub_origin` (prioritas 3). "
+                 "Minimal satu dari `courier_position`/`hub_origin` wajib ada.\n"
+                 "- **Opsional:** `mode`, `last_mile_precision`, "
+                 "`dynamic_rerouting`, `skip_traffic`, `return_to_hub`.\n\n"
+                 "- Alamat tanpa `latitude`/`longitude` di-geocode (Nominatim).\n"
+                 "- Error `400` bila geocode gagal / area tidak tercakup, `404` "
+                 "bila rute ke sebuah stop tidak ditemukan.\n\n"
+                 "### Performa\n"
+                 "- Leg diproses **paralel** dengan konkurrensi terbatas "
+                 "(env `DELIVERY_LEG_CONCURRENCY`, default 5).\n"
+                 "- Set `skip_traffic: true` untuk **memotong probe jaringan "
+                 "eksternal TomTom** di tiap leg (A* murni) — respons jauh "
+                 "lebih cepat, cocok untuk demo/testing."))
 async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
                                         request: Request):
     """Rute pengantaran multi-stop dari Hub ke banyak penerima.
@@ -615,14 +782,16 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     - Meng-geocode alamat tiap delivery (Nominatim + cache Redis) bila koordinat
       tidak diberikan inline.
     - Menentukan urutan stop (TSP heuristic) dengan prioritas EXPRESS.
-    - Menghitung leg sungguhan hanya untuk pasangan stop berurutan.
+    - Menghitung leg sungguhan hanya untuk pasangan stop berurutan, diproses
+      paralel dengan konkurrensi terbatas.
     """
     from app.services.geocode import geocode_address
     from app.services.pathfinding.delivery_optimizer import optimize_stop_order
-    from app.services.traffic.eta import compute_eta
 
     redis = getattr(request.app.state, "redis", None)
-    hub = (payload.hub_origin.latitude, payload.hub_origin.longitude)
+    hub = ((payload.hub_origin.latitude, payload.hub_origin.longitude)
+           if payload.hub_origin is not None else None)
+    start = await _resolve_delivery_start(request, redis, payload)
     mode = _normalize_mode(payload)
     last_mile = last_mile_enabled(payload)
     need_nodes = True
@@ -653,7 +822,7 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
 
     service_types = [s["service_type"] for s in stops]
     order = optimize_stop_order(
-        hub, [s["coordinate"] for s in stops],
+        start, [s["coordinate"] for s in stops],
         service_types=service_types,
         return_to_hub=payload.return_to_hub,
     )
@@ -665,81 +834,45 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     eta_graph, eta_locations = _reference_graph(request.app)
     speed_kmh = eta_config()["mode_speed_kmh"]
 
-    legs = []
-    total_dist = 0.0
-    total_dur = 0.0
-    prev = hub
-    warnings = []
-    sources = []
-
-    async def _add_leg(stop, prev_coord):
-        nonlocal total_dist, total_dur, prev
-        dest = stop["coordinate"]
-        try:
-            plan = await run_in_threadpool(
-                _resolve_plan, request.app,
-                prev_coord[0], prev_coord[1], dest[0], dest[1])
-        except AreaNotCoveredError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        leg_payload = RouteRequest(
-            origin=Coordinate(latitude=prev_coord[0], longitude=prev_coord[1]),
-            destination=Coordinate(latitude=dest[0], longitude=dest[1]),
-            mode=mode,
-            last_mile_precision=last_mile,
-            dynamic_rerouting=payload.dynamic_rerouting,
-        )
-        traffic_penalties = {}
-        if not payload.skip_traffic:
-            traffic_penalties = await get_request_penalties(
-                request.app, redis, prev_coord, dest)
-        response, node_sequence, final_penalties, _m = await _best_route(
-            request.app, plan, redis, traffic_penalties, leg_payload, mode,
-            prev_coord[0], prev_coord[1], dest[0], dest[1],
-            need_nodes=need_nodes, skip_traffic=payload.skip_traffic)
-        if response is None:
-            raise HTTPException(status_code=404,
-                                detail="Rute tidak ditemukan ke stop "
-                                       f"{stop['recipient_name'] or stop['package_id']}")
-
-        distance_m = _physical_distance(response.route_coordinates)
-        eta_s = response.estimated_time_seconds
-        if eta_s is None:
-            eta_s = compute_eta(eta_graph, eta_locations,
-                                response.route_coordinates, final_penalties)
-        incidents = route_incidents(
-            node_sequence or [], response.route_coordinates,
-            final_penalties, speed_kmh, incident_delay_minutes)
-        legs.append(OptimizedDeliveryLeg(
-            leg_index=len(legs),
-            stop_sequence_number=len(legs) + 1,
-            package_id=stop["package_id"],
-            recipient_name=stop["recipient_name"],
-            service_type=stop["service_type"],
-            geometry=response.route_coordinates,
-            distance_km=round(distance_m / 1000.0, 2),
-            duration_mins=round((eta_s or 0.0) / 60.0, 1),
-            estimated_time_seconds=eta_s,
-            traffic_segments=_traffic_segments(node_sequence, final_penalties),
-            incidents=incidents,
-        ))
-        total_dist += distance_m
-        total_dur += (eta_s or 0.0)
-        if response.warning:
-            warnings.append(response.warning)
-        sources.append(response.source)
-        prev = dest
-
+    leg_specs = []
+    prev_coord = start
     for stop in ordered:
-        await _add_leg(stop, prev)
-
+        leg_specs.append((prev_coord, stop))
+        prev_coord = stop["coordinate"]
     if payload.return_to_hub and ordered:
-        await _add_leg({
+        leg_specs.append((prev_coord, {
             "package_id": None,
             "recipient_name": "Hub",
             "service_type": "REGULAR",
-            "coordinate": hub,
-        }, prev)
+            "coordinate": hub if hub is not None else start,
+        }))
+
+    semaphore = asyncio.Semaphore(_DELIVERY_LEG_CONCURRENCY)
+    results = await asyncio.gather(
+        *(_process_single_leg(
+            request.app, redis, semaphore, leg_index, stop, prev_coord,
+            mode, last_mile, need_nodes, payload,
+            incident_delay_minutes, speed_kmh, eta_graph, eta_locations)
+          for leg_index, (prev_coord, stop) in enumerate(leg_specs)),
+        return_exceptions=True,
+    )
+
+    first_error = next((r for r in results if isinstance(r, BaseException)), None)
+    if first_error is not None:
+        raise first_error
+
+    legs = []
+    total_dist = 0.0
+    total_dur = 0.0
+    warnings = []
+    sources = []
+    for r in results:
+        legs.append(r["leg"])
+        total_dist += r["distance_m"]
+        total_dur += r["duration_s"]
+        if r["warning"]:
+            warnings.append(r["warning"])
+        sources.append(r["source"])
 
     stops_resp = []
     for seq, idx in enumerate(order, start=1):
@@ -764,7 +897,16 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     )
 
 
-@router.post("/geofence-check", response_model=GeofenceCheckResponse)
+@router.post("/geofence-check", response_model=GeofenceCheckResponse,
+             summary="Cek geofence posisi vs target stop",
+             description=(
+                 "Cek apakah posisi kurir (`current`) berada dalam radius "
+                 "geofencing terhadap target stop (`target`) menggunakan jarak "
+                 "haversine.\n\n"
+                 "- **Wajib:** `current`, `target` (Coordinate).\n"
+                 "- **Opsional:** `radius_m` (default 30 m).\n\n"
+                 "Khusus fallback/verifikasi manual — untuk deteksi real-time "
+                 "gunakan WebSocket `WS /api/v1/ws/driver/position`."))
 async def geofence_check(payload: GeofenceCheckRequest):
     """Cek apakah posisi kurir berada dalam radius geofencing sebuah stop.
 

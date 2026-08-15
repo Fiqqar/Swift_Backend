@@ -7,8 +7,11 @@ router = APIRouter()
 
 
 class WeightUpdate(BaseModel):
-    edge_id: int
-    multiplier: float = Field(gt=0)
+    edge_id: int = Field(description="Wajib. ID edge (ruas jalan) pada graf.")
+    multiplier: float = Field(
+        gt=0,
+        description="Wajib. Faktor pengali durasi edge (>0). Nilai `inf` "
+                    "menandakan edge ditutup.")
 
 
 class WeightAck(BaseModel):
@@ -26,7 +29,13 @@ class PenaltiesResponse(BaseModel):
     penalties: list[PenaltyEntry]
 
 
-@router.post("/update-weight", response_model=WeightAck)
+@router.post("/update-weight", response_model=WeightAck,
+             summary="Set/memperbarui penalti traffic sebuah edge",
+             description=(
+                 "Menyimpan penalti (multiplier) untuk satu edge ke Redis, "
+                 "dipakai saat pathfinding untuk memperlambat/menutup jalan.\n\n"
+                 "- **Wajib:** `edge_id`, `multiplier` (>0; `inf` = jalan ditutup).\n"
+                 "- Error `503` bila Redis tidak tersedia."))
 async def update_weight(payload: WeightUpdate, request: Request):
     redis = getattr(request.app.state, "redis", None)
     if redis is None:
@@ -38,7 +47,12 @@ async def update_weight(payload: WeightUpdate, request: Request):
     return WeightAck(status="ok", edge_id=payload.edge_id, multiplier=payload.multiplier)
 
 
-@router.get("/penalties", response_model=PenaltiesResponse)
+@router.get("/penalties", response_model=PenaltiesResponse,
+            summary="Daftar penalti traffic tersimpan",
+            description=(
+                "Menampilkan semua penalti edge yang tersimpan di Redis "
+                "(penalti manual).\n\n"
+                "- Error `503` bila Redis tidak tersedia."))
 async def list_penalties(request: Request):
     redis = getattr(request.app.state, "redis", None)
     if redis is None:
@@ -63,7 +77,12 @@ class TrafficStatusResponse(BaseModel):
     penalty_count: int
 
 
-@router.get("/status", response_model=TrafficStatusResponse)
+@router.get("/status", response_model=TrafficStatusResponse,
+            summary="Status modul traffic",
+            description=(
+                "Menampilkan status konfigurasi traffic: mode provider "
+                "(`off`/`auto`/`smart_hybrid`), apakah poller berjalan, daftar "
+                "provider aktif, dan jumlah penalti."))
 async def traffic_status(request: Request):
     from app.services.traffic.poller import (
         should_start_poller,
@@ -109,7 +128,11 @@ class TrafficMapResponse(BaseModel):
     source: str | None = None
 
 
-@router.get("/map", response_model=TrafficMapResponse)
+@router.get("/map", response_model=TrafficMapResponse,
+            summary="Peta segmen jalan yang kena penalti",
+            description=(
+                "Menghasilkan daftar segmen jalan yang sedang kena penalti "
+                "beserta koordinatnya, berguna untuk visualisasi peta traffic."))
 async def traffic_map(request: Request):
     from app.services.traffic.matcher import penalized_segments
     from app.services.traffic.poller import _reference_graph

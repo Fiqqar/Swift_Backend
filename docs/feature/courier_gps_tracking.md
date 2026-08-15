@@ -362,33 +362,39 @@ Ikuti pola test yang sudah ada:
 | 6 | Client Redis `app/core/redis.py`                            | ✅ Ada  |
 | 7 | Auth JWT `current_kurir` (`dependencies.py:21`)             | ✅ Ada  |
 | 8 | Snapping `snap_point_to_graph` (`snap.py:87`)               | ✅ Ada  |
-| 9 | Endpoint WS `/ws/driver/position`                           | ❌ Belum |
-| 10| Schema `courier_position` di request pathfinding            | ❌ Belum |
-| 11| Pemakaian posisi kurir sbg titik awal rute                  | ❌ Belum |
-| 12| Konsumsi `HGETALL driver:pos:*` di pathfinding/dashboard    | ❌ Belum |
-| 13| Test untuk posisi kurir                                     | ❌ Belum |
-| 14| Push `geofence_enter`/`geofence_exit` via WS                | ❌ Belum |
-| 15| State machine geofence di Redis (`driver:geofence:{id}:{pid}`) + anti-spam reconnect | ❌ Belum |
-| 16| Cache stop belum terkirim `driver:stops:{id}` + invalidasi  | ❌ Belum |
-| 17| Fallback chain titik awal (courier → Redis → hub)           | ❌ Belum |
+| 9 | Endpoint WS `/api/v1/ws/driver/position`                    | ✅ Ada  (`app/api/v1/endpoints/tracking.py`) |
+| 10| Schema `courier_position` di request pathfinding            | ✅ Ada  (`app/schemas/pathfinding.py:80`) |
+| 11| Pemakaian posisi kurir sbg titik awal rute                  | ✅ Ada  (`_resolve_delivery_start`) |
+| 12| Konsumsi `HGETALL driver:pos:*` di pathfinding/dashboard    | ✅ Ada  (`get_kurir_position_latlon`) |
+| 13| Test untuk posisi kurir                                     | ✅ Ada  (`tests/test_courier_position.py`) |
+| 14| Push `geofence_enter`/`geofence_exit` via WS                | ✅ Ada  (`_geofence_check`) |
+| 15| State machine geofence di Redis (`driver:geofence:{id}:{pid}`) + anti-spam reconnect | ✅ Ada  (`geofence_event`) |
+| 16| Cache stop belum terkirim `driver:stops:{id}` + invalidasi  | ✅ Ada  (`_get_stops` + `_invalidate_tracking_cache`) |
+| 17| Fallback chain titik awal (courier → Redis → hub)           | ✅ Ada  (`resolve_start_point`) |
 | 18| `/geofence-check` dipertahankan sebagai fallback            | ✅ Ada  |
+
+> Implementasi dasar selesai. Langkah 6 (dynamic rerouting memakai
+> `_MAX_OFF_ROUTE_M` + `app.state.active_route`) belum dikerjakan —
+> tetap menjadi fitur turunan.
 
 ## 11. Langkah Implementasi yang Disarankan
 
-1. Tambah helper Redis `set_kurir_position` / `get_kurir_position`
-   (`app/services/cache_service.py` atau `app/services/tracking.py` baru).
-2. Tambah endpoint WebSocket `WS /api/v1/ws/driver/position` + auth JWT
+> Status: langkah 1-5, 7 sudah diimplementasikan. Tinggal langkah 6 (fitur turunan).
+
+1. ✅ Helper Redis `set_kurir_position` / `get_kurir_position` + geofence state
+   + stops cache (`app/services/tracking.py`).
+2. ✅ Endpoint WebSocket `WS /api/v1/ws/driver/position` + auth JWT
    (guard oleh `ENABLE_LIVE_TRACKING`).
-3. Tambah `courier_position` opsional pada `OptimizedDeliveryRouteRequest`
-   (`app/schemas/pathfinding.py`) dan terapkan **fallback chain** titik awal:
+3. ✅ `courier_position` opsional pada `OptimizedDeliveryRouteRequest`
+   (`app/schemas/pathfinding.py`) dan **fallback chain** titik awal:
    `courier_position → HGETALL driver:pos → hub_origin`.
-4. Implementasikan geofence server-side: resolusi stop belum terkirim
+4. ✅ Geofence server-side: resolusi stop belum terkirim
    (cache `driver:stops:{id}`), hitung haversine, **state machine per paket di
    Redis** (`driver:geofence:{kurir_id}:{package_id}` + TTL `KURIR_GEOFENCE_TTL_SECONDS`),
    push `geofence_enter`/`geofence_exit` hanya saat transisi (anti-spam
    reconnect WS).
-5. Invalidasi cache `driver:stops:{id}` dan `DEL driver:geofence:{kurir_id}:{package_id}`
+5. ✅ Invalidasi cache `driver:stops:{id}` dan `DEL driver:geofence:{kurir_id}:{package_id}`
    pada `PATCH /shipments/{id}/status` (`shipments.py:443`) saat status `delivered`.
-6. (Fitur turunan) Implementasikan dynamic rerouting memakai
+6. ⏳ (Fitur turunan) Implementasikan dynamic rerouting memakai
    `_MAX_OFF_ROUTE_M` dan `app.state.active_route`.
-7. Tambahkan test sesuai bagian 9.
+7. ✅ Tambahkan test sesuai bagian 9 (`tests/test_courier_position.py`).
