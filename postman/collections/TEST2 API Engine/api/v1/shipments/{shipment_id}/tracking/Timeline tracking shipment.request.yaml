@@ -1,0 +1,15 @@
+$kind: http-request
+description: |-
+  Menampilkan riwayat tracking (timeline event) untuk sebuah shipment beserta data hub, penerima, koordinat, dan foto.
+
+  - **Path wajib:** `shipment_id`.
+  - Error `404` bila shipment/paket tidak ditemukan.
+url: "{{baseUrl}}/api/v1/shipments/:shipment_id/tracking"
+method: GET
+headers:
+  Accept: application/json
+pathVariables:
+  shipment_id: "431"
+settings: {}
+examples: ./.resources/Timeline tracking shipment.resources/examples
+order: 1000

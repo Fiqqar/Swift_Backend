@@ -1,0 +1,23 @@
+$kind: http-request
+description: |-
+  Menandai billing shipment sebagai `paid` atau `refunded`.
+
+  - **Path wajib:** `shipment_id`.
+  - **Body wajib:** `status` = `paid`/`refunded`.
+  - Error `404` bila shipment tidak ditemukan.
+url: "{{baseUrl}}/api/v1/shipments/:shipment_id/billing"
+method: PATCH
+headers:
+  Content-Type: application/json
+  Accept: application/json
+pathVariables:
+  shipment_id: "431"
+body:
+  type: json
+  content: |-
+    {
+      "status": "paid"
+    }
+settings: {}
+examples: ./.resources/Update status billing.resources/examples
+order: 1000

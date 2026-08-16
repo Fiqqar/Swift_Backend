@@ -1,0 +1,38 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/shipments/:shipment_id/history"
+  method: POST
+  headers:
+    - key: Content-Type
+      value: application/json
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+  pathVariables:
+    shipment_id: "431"
+  body:
+    type: json
+    content: |-
+      {
+        "event": "departed_hub",
+        "keterangan": null,
+        "hub_id": null,
+        "recipient_name": "string",
+        "latitude": null,
+        "longitude": 113.1363255825674,
+        "photo_urls": [
+          "string",
+          "string"
+        ]
+      }
+response:
+  statusCode: 201
+  statusText: Created
+  headers:
+    Content-Type: application/json
+  body:
+    type: text
+    content: ""
+order: 1000

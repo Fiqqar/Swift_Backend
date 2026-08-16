@@ -1,0 +1,15 @@
+$kind: http-request
+description: |-
+  Menampilkan detail shipment lengkap: paket, batch, kurir, hub.
+
+  - **Path wajib:** `shipment_id`.
+  - Error `404` bila shipment/batch/paket/kurir tidak ditemukan.
+url: "{{baseUrl}}/api/v1/shipments/:shipment_id"
+method: GET
+headers:
+  Accept: application/json
+pathVariables:
+  shipment_id: "431"
+settings: {}
+examples: ./.resources/Detail shipment.resources/examples
+order: 6000

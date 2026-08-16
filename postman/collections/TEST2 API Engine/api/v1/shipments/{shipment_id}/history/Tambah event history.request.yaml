@@ -1,0 +1,33 @@
+$kind: http-request
+description: |-
+  Menambahkan event riwayat manual untuk sebuah shipment.
+
+  - **Path wajib:** `shipment_id`.
+  - **Body wajib:** `event` (`received_at_hub`/`departed_hub`/`pod_submitted`).
+  - **Opsional:** `keterangan`, `hub_id`, `recipient_name`, `latitude`, `longitude`, `photo_urls` (array URL Cloudinary).
+  - Error `404` bila shipment/hub tidak ditemukan.
+url: "{{baseUrl}}/api/v1/shipments/:shipment_id/history"
+method: POST
+headers:
+  Content-Type: application/json
+  Accept: application/json
+pathVariables:
+  shipment_id: "431"
+body:
+  type: json
+  content: |-
+    {
+      "event": "departed_hub",
+      "keterangan": null,
+      "hub_id": null,
+      "recipient_name": "string",
+      "latitude": null,
+      "longitude": 113.1363255825674,
+      "photo_urls": [
+        "string",
+        "string"
+      ]
+    }
+settings: {}
+examples: ./.resources/Tambah event history.resources/examples
+order: 2000

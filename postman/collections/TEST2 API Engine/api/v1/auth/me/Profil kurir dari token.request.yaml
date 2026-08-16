@@ -1,0 +1,13 @@
+$kind: http-request
+description: |-
+  Mengambil data kurir aktif berdasarkan token JWT pada header `Authorization: Bearer <token>`.
+
+  - **Wajib:** header `Authorization: Bearer <token>`.
+  - Error `401` bila token tidak ada/tidak valid/akun nonaktif.
+url: "{{baseUrl}}/api/v1/auth/me"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Profil kurir dari token.resources/examples
+order: 1000

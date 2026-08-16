@@ -1,0 +1,17 @@
+$kind: http-request
+description: |-
+  Menampilkan daftar batch dengan filter opsional.
+
+  - **Query opsional:** `status`, `kurir_id`, `hub_id`.
+  - Tidak memerlukan autentikasi.
+url: "{{baseUrl}}/api/v1/batches?status=string&kurir_id=4733&hub_id=4733"
+method: GET
+headers:
+  Accept: application/json
+queryParams:
+  status: string
+  kurir_id: "4733"
+  hub_id: "4733"
+settings: {}
+examples: ./.resources/Daftar batch.resources/examples
+order: 3000

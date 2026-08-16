@@ -1,0 +1,35 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/traffic/status"
+  method: GET
+  headers:
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "enabled": false,
+        "mode": "string",
+        "poller_running": false,
+        "providers": [
+          {
+            "name": "string",
+            "active": false
+          },
+          {
+            "name": "string",
+            "active": false
+          }
+        ],
+        "penalty_count": 9129
+      }
+order: 1000

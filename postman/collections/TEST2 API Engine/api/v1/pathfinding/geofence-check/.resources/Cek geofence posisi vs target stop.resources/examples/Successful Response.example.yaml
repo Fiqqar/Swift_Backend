@@ -1,0 +1,40 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/pathfinding/geofence-check"
+  method: POST
+  headers:
+    - key: Content-Type
+      value: application/json
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+  body:
+    type: json
+    content: |-
+      {
+        "current": {
+          "latitude": -31.236852682790712,
+          "longitude": 17.239692422702092
+        },
+        "target": {
+          "latitude": 55.790800849874984,
+          "longitude": -7.889533176901239
+        },
+        "radius_m": 30
+      }
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "within_radius": true,
+        "distance_m": 7625.307442094493,
+        "radius_m": 9454.265835638591
+      }
+order: 1000

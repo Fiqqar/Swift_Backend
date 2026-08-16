@@ -1,0 +1,37 @@
+$kind: http-request
+description: |-
+  Autentikasi kurir dengan `username` + `password`. Mengembalikan token JWT yang dipakai sebagai `Authorization: Bearer <token>` untuk endpoint yang membutuhkan autentikasi kurir (mis. `GET /api/v1/shipments`).
+
+  - **Wajib:** `username`, `password` (tidak boleh kosong).
+  - Error `401` bila kredensial salah, `422` bila kosong.
+url: "{{baseUrl}}/api/v1/auth/login"
+method: POST
+headers:
+  Content-Type: application/json
+  Accept: application/json
+body:
+  type: json
+  content: |-
+    {
+      "username": "joko",
+      "password": "rahasia123"
+    }
+scripts:
+  - type: afterResponse
+    code: "const responseJson = pm.response.json();\r
+
+      \r
+
+      // ambil access token\r
+
+      const accessToken = responseJson.data.token;\r
+
+      \r
+
+      // simpan ke environment variable\r
+
+      pm.environment.set(\"bearerToken\", accessToken);"
+    language: text/javascript
+settings: {}
+examples: ./.resources/Login kurir.resources/examples
+order: 1000

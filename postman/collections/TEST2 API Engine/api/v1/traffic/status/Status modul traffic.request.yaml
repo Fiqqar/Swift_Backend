@@ -1,0 +1,9 @@
+$kind: http-request
+description: "Menampilkan status konfigurasi traffic: mode provider (`off`/`auto`/`smart_hybrid`), apakah poller berjalan, daftar provider aktif, dan jumlah penalti."
+url: "{{baseUrl}}/api/v1/traffic/status"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Status modul traffic.resources/examples
+order: 1000

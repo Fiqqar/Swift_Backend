@@ -239,6 +239,13 @@ async def lifespan(app: FastAPI):
             traffic_task = asyncio.create_task(traffic_poller(app, redis_client))
             app.state.traffic_task = traffic_task
 
+    nav_task = None
+    from app.services.navigation import NavRegistry, navigation_worker
+    app.state.nav_registry = NavRegistry()
+    if os.environ.get("ENABLE_LIVE_NAVIGATION", "0") == "1":
+        nav_task = asyncio.create_task(navigation_worker(app))
+        app.state.nav_task = nav_task
+
     try:
         yield
     finally:
@@ -254,6 +261,8 @@ async def lifespan(app: FastAPI):
             base_task.cancel()
         if traffic_task is not None:
             traffic_task.cancel()
+        if nav_task is not None:
+            nav_task.cancel()
         await close_redis(redis_client)
         try:
             await dispose_db()
@@ -301,6 +310,12 @@ app = FastAPI(
             "name": "Tracking",
             "description": "Real-time tracking posisi kurir (WebSocket) dan "
                            "status live-tracking.",
+        },
+        {
+            "name": "Navigation",
+            "description": "Real-time navigation & auto-rerouting kurir "
+                           "(WebSocket): progress rute, off-route warning, "
+                           "reroute berbasis traffic.",
         },
     ],
     lifespan=lifespan,
@@ -393,6 +408,64 @@ def _openapi():
                 "- Geofence: radius 30 m; state machine per paket di Redis "
                 "`driver:geofence:{kurir_id}:{package_id}` (event hanya dikirim "
                 "saat transisi state)."
+            ),
+            "security": [{"BearerAuth": []}],
+            "responses": {
+                "200": {"description": "Koneksi WebSocket berlangsung"}
+            },
+        }
+    }
+    schema.setdefault("paths", {})["/api/v1/ws/navigation"] = {
+        "get": {
+            "tags": ["Navigation"],
+            "summary": "WS Real-time navigation & auto-rerouting (WebSocket)",
+            "description": (
+                "**PENTING — JANGAN tekan \"Try it out\".**\n\n"
+                "Endpoint ini adalah **WebSocket**, bukan HTTP biasa. Route "
+                "hanya menanggapi handshake `ws://`/`wss://`. Jika diuji lewat "
+                "tombol \"Try it out\", Postman request HTTP, atau dibuka di "
+                "browser, akan muncul **404 Not Found** — itu **normal dan "
+                "diharapkan**, karena tidak ada route HTTP di path ini.\n\n"
+                "### Prasyarat pengujian\n"
+                "1. Aktifkan fitur: set `ENABLE_LIVE_NAVIGATION=1` di `.env` lalu "
+                "restart server. Tanpa ini handshake WS berhasil tetapi koneksi "
+                "langsung ditutup kode `1008`.\n"
+                "2. Ambil token: `POST /api/v1/auth/login` → salin `data.token`.\n"
+                "3. Hitung rute dulu: `POST /api/v1/pathfinding/find-route` "
+                "(atau `/find-optimized-delivery-route`) dengan header Bearer. "
+                "Respons berisi `route_id` yang dipakai sebagai `current_route_id`.\n"
+                "4. Verifikasi status: `GET /api/v1/ws/navigation/status` harus "
+                "mengembalikan `{\"enabled\": true}`.\n\n"
+                "### URL\n"
+                "`ws://localhost:8000/api/v1/ws/navigation`\n\n"
+                "### Autentikasi (handshake)\n"
+                "- Query param `?token=<JWT>` **atau** header "
+                "`Authorization: Bearer <JWT>`.\n"
+                "- Gagal auth → server tutup koneksi kode `4401`.\n"
+                "- Bila `ENABLE_LIVE_NAVIGATION=0` → tutup kode `1008`.\n\n"
+                "### Pesan dari klien\n"
+                "- `{\"type\":\"ping\"}` → balas `ack`.\n"
+                "- `{\"type\":\"start_navigation\",\"route_id\":<id>,"
+                "\"leg_index\":0}` → muat snapshot rute dari Redis "
+                "`driver:nav:{kurir_id}`; balas `ack` berisi polyline leg aktif.\n"
+                "- `{\"type\":\"location_update\",\"lat\":-6.80,\"lng\":110.83,"
+                "\"bearing\":90,\"speed\":10,\"current_route_id\":<id>}` → "
+                "simpan posisi, kirim `route_progress`, cek off-route, dan "
+                "auto-reroute bila perlu.\n\n"
+                "### Pesan dari server\n"
+                "- `{\"type\":\"ack\",\"ok\":true,...}` — handshake pesan sukses.\n"
+                "- `{\"type\":\"route_progress\",\"remaining_distance_m\":..,"
+                "\"remaining_time_s\":..,\"progress_pct\":..}`.\n"
+                "- `{\"type\":\"off_route_warning\",\"distance_m\":..,"
+                "\"threshold_m\":40}` — kurir keluar jalur rute aktif.\n"
+                "- `{\"type\":\"auto_rerouted\"|\"reroute_available\","
+                "\"polyline\":\"<encoded>\",\"saving_s\":..,\"eta_s\":..,"
+                "\"applied\":true}` — rute baru lebih cepat / kurir off-route.\n\n"
+                "### Keterbatasan\n"
+                "- Rate limit `NAV_POS_MAX_RATE_SECONDS` (default 3 s) per "
+                "koneksi.\n"
+                "- Cooldown reroute `REROUTE_COOLDOWN_SECONDS` (default 30 s) "
+                "mencegah route flickering."
             ),
             "security": [{"BearerAuth": []}],
             "responses": {

@@ -62,7 +62,11 @@ from app.services.pathfinding.route_options import (
     route_incidents,
     route_summary,
 )
-from app.services.tracking import get_kurir_position_latlon
+from app.services.polyline import encode_polyline
+from app.services.tracking import (
+    get_kurir_position_latlon,
+    set_nav_route,
+)
 from app.services.traffic.smart_hybrid import get_request_penalties
 
 router = APIRouter()
@@ -112,6 +116,19 @@ def dynamic_rerouting_enabled(payload) -> bool:
 
 def live_tracking_enabled() -> bool:
     return _env_bool("ENABLE_LIVE_TRACKING", False)
+
+
+def nav_enabled(payload) -> bool:
+    if payload.dynamic_rerouting is not None:
+        return bool(payload.dynamic_rerouting)
+    return _env_bool("ENABLE_LIVE_NAVIGATION", False)
+
+
+def _next_nav_route_id(app) -> int:
+    if not hasattr(app.state, "_nav_route_counter"):
+        app.state._nav_route_counter = 0
+    app.state._nav_route_counter += 1
+    return app.state._nav_route_counter
 
 
 def _token_kurir_id(request: Request) -> int | None:
@@ -638,6 +655,27 @@ async def find_route(payload: RouteRequest, request: Request):
             "mode": mode,
             "last_mile": last_mile_enabled(payload),
         }
+    if nav_enabled(payload):
+        route_id = _next_nav_route_id(request.app)
+        response.route_id = route_id
+        await set_nav_route(redis, _token_kurir_id(request) or 0, {
+            "route_id": route_id,
+            "kind": "single",
+            "mode": mode,
+            "last_mile": last_mile_enabled(payload),
+            "total_distance_m": round(
+                _physical_distance(response.route_coordinates), 1),
+            "total_eta_s": round(response.estimated_time_seconds or 0.0, 1),
+            "legs": [{
+                "index": 0,
+                "stop_sequence_number": 1,
+                "package_id": None,
+                "recipient_name": "Destination",
+                "encoded": encode_polyline(response.route_coordinates, 5),
+                "dest": (lat2, lon2),
+                "eta_s": round(response.estimated_time_seconds or 0.0, 1),
+            }],
+        })
     return response
 
 
@@ -743,7 +781,7 @@ async def find_route_options(payload: RouteRequest, request: Request):
 
     total_route = len(routes)
 
-    return RouteOptionsResponse(
+    response = RouteOptionsResponse(
         status="success",
         total_route=total_route,
         routes=routes,
@@ -751,6 +789,30 @@ async def find_route_options(payload: RouteRequest, request: Request):
         warning=best.warning,
         graph_radius_meters=best.graph_radius_meters,
     )
+
+    if nav_enabled(payload):
+        best_opt = routes[0]
+        route_id = _next_nav_route_id(request.app)
+        response.route_id = route_id
+        await set_nav_route(redis, _token_kurir_id(request) or 0, {
+            "route_id": route_id,
+            "kind": "single",
+            "mode": mode,
+            "last_mile": last_mile,
+            "total_distance_m": round(
+                _physical_distance(best_opt.route_coordinates), 1),
+            "total_eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
+            "legs": [{
+                "index": 0,
+                "stop_sequence_number": 1,
+                "package_id": None,
+                "recipient_name": "Destination",
+                "encoded": encode_polyline(best_opt.route_coordinates, 5),
+                "dest": (lat2, lon2),
+                "eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
+            }],
+        })
+    return response
 
 
 @router.post("/find-optimized-delivery-route",
@@ -885,7 +947,7 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
             longitude=stops[idx]["coordinate"][1],
         ))
 
-    return OptimizedDeliveryRouteResponse(
+    response = OptimizedDeliveryRouteResponse(
         status="success",
         total_distance_km=round(total_dist / 1000.0, 2),
         total_duration_mins=round(total_dur / 60.0, 1),
@@ -895,6 +957,32 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
         source=sources[0] if sources else "demo",
         warning="; ".join(dict.fromkeys(warnings)) or None,
     )
+
+    if nav_enabled(payload):
+        route_id = _next_nav_route_id(request.app)
+        response.route_id = route_id
+        await set_nav_route(redis, _token_kurir_id(request) or 0, {
+            "route_id": route_id,
+            "kind": "multi",
+            "mode": mode,
+            "last_mile": last_mile,
+            "total_distance_m": round(total_dist, 1),
+            "total_eta_s": round(total_dur, 1),
+            "legs": [
+                {
+                    "index": l.leg_index,
+                    "stop_sequence_number": l.stop_sequence_number,
+                    "package_id": l.package_id,
+                    "recipient_name": l.recipient_name,
+                    "encoded": encode_polyline(l.geometry, 5),
+                    "dest": (l.geometry[-1][0], l.geometry[-1][1])
+                            if l.geometry else None,
+                    "eta_s": round(l.estimated_time_seconds or 0.0, 1),
+                }
+                for l in legs
+            ],
+        })
+    return response
 
 
 @router.post("/geofence-check", response_model=GeofenceCheckResponse,

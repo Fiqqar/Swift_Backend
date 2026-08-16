@@ -45,6 +45,14 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 .toggle-switch input:checked + .slider { background: #0f6dc1; }
 .toggle-switch input:checked + .slider::before { transform: translateX(18px); }
 .traffic-ind { font-size: 12px; color: #5b6b7b; padding: 6px 0; font-weight: 600; }
+.nav-ind { font-size: 12px; color: #5b6b7b; padding: 6px 0; font-weight: 600; }
+.nav-ind.active { color: #0f6dc1; }
+.nav-ind.warn { color: #b7791f; }
+.nav-ind.offroute { color: #d81b1b; }
+.nav-progress { margin-top: 8px; }
+.nav-progress-bar { background: #e3e8ed; border-radius: 999px; height: 8px; overflow: hidden; }
+.nav-progress-bar > div { height: 100%; background: #0f6dc1; border-radius: 999px; transition: width .3s ease; }
+.nav-progress-meta { display: flex; justify-content: space-between; font-size: 11px; color: #5b6b7b; margin-top: 4px; }
 .traffic-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: #5b6b7b; }
 .lg { width: 14px; height: 5px; border-radius: 2px; display: inline-block; }
 .lg-green { background: #2e9e4f; }

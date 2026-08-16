@@ -1,0 +1,12 @@
+$kind: http-request
+description: |-
+  Menampilkan semua penalti edge yang tersimpan di Redis (penalti manual).
+
+  - Error `503` bila Redis tidak tersedia.
+url: "{{baseUrl}}/api/v1/traffic/penalties"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Daftar penalti traffic tersimpan.resources/examples
+order: 1000

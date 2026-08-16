@@ -1,0 +1,17 @@
+$kind: http-request
+description: |-
+  Menampilkan shipment milik kurir yang sedang login (berdasarkan token JWT).
+
+  - **Wajib:** header `Authorization: Bearer <token>`.
+  - **Query opsional:** `status`, `batch_id`.
+  - Error `401` bila token tidak ada/tidak valid.
+url: "{{baseUrl}}/api/v1/shipments?status=string&batch_id=4733"
+method: GET
+headers:
+  Accept: application/json
+queryParams:
+  status: string
+  batch_id: "4733"
+settings: {}
+examples: ./.resources/Daftar shipment kurir.resources/examples
+order: 2000

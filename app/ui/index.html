@@ -80,6 +80,20 @@
     </section>
 
     <section>
+      <h2>Navigasi Real-time</h2>
+      <div class="nav-ind" id="nav-ind">Navigasi: nonaktif</div>
+      <button class="btn primary" id="btn-nav-start" disabled>Mulai Navigasi</button>
+      <button class="btn ghost" id="btn-nav-apply" style="display:none;">Terapkan Rute Baru</button>
+      <div class="nav-progress" id="nav-progress-wrap" style="display:none;">
+        <div class="nav-progress-bar"><div id="nav-progress-fill" style="width:0%"></div></div>
+        <div class="nav-progress-meta">
+          <span id="nav-remaining">-</span>
+          <span id="nav-eta">-</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>Hasil Rute</h2>
       <div id="result">
         <div class="row"><span>Status</span><b id="r-status">-</b></div>

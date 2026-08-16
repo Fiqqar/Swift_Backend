@@ -1,0 +1,31 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/traffic/penalties"
+  method: GET
+  headers:
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "penalties": [
+          {
+            "edge_id": 692,
+            "multiplier": 5061.22883191467
+          },
+          {
+            "edge_id": 7474,
+            "multiplier": 2860.7537312923428
+          }
+        ]
+      }
+order: 1000

@@ -67,6 +67,10 @@ class RouteResponse(BaseModel):
     estimated_time_seconds: float | None = None
     estimated_arrival: datetime | None = None
     traffic_segments: List[TrafficRouteSegment] = []
+    route_id: int | None = Field(
+        default=None,
+        description="ID snapshot rute aktif (untuk real-time navigation). "
+                    "Ada bila live navigation / dynamic rerouting aktif.")
 
 class RouteIncident(BaseModel):
     type: Literal["road_closure", "congestion"]
@@ -97,6 +101,10 @@ class RouteOptionsResponse(BaseModel):
     source: str = "demo"
     warning: str | None = None
     graph_radius_meters: int | None = None
+    route_id: int | None = Field(
+        default=None,
+        description="ID snapshot rute aktif (best route, untuk real-time "
+                    "navigation). Ada bila live navigation aktif.")
 
 
 ServiceType = Literal["EXPRESS", "REGULAR"]
@@ -219,6 +227,9 @@ class OptimizedDeliveryRouteResponse(BaseModel):
     legs: List[OptimizedDeliveryLeg]
     source: str = "demo"
     warning: str | None = None
+    route_id: int | None = Field(
+        default=None,
+        description="ID snapshot rute aktif (untuk real-time navigation).")
 
 
 class GeofenceCheckRequest(BaseModel):
