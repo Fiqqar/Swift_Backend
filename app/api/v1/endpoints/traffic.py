@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.schemas.pathfinding import PolylineCoords
 from app.services.cache_service import load_penalties, store_penalty
 
 router = APIRouter()
@@ -120,7 +121,7 @@ class MapSegment(BaseModel):
     edge_id: int
     multiplier: float
     closure: bool
-    coordinates: list[list[float]]
+    coordinates: PolylineCoords
 
 
 class TrafficMapResponse(BaseModel):

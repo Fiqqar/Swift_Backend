@@ -1,7 +1,15 @@
 from datetime import datetime
-from typing import List, Literal, Tuple
+from typing import Annotated, List, Literal, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
+
+from app.services.polyline import encode_polyline
+
+PolylineCoords = Annotated[
+    List[Tuple[float, float]],
+    PlainSerializer(lambda v: encode_polyline(v, 5),
+                    return_type=str, when_used="json"),
+]
 
 class Coordinate(BaseModel):
     latitude: float = Field(
@@ -52,7 +60,7 @@ class TrafficRouteSegment(BaseModel):
 class RouteResponse(BaseModel):
     status: str
     total_distance_meters: float
-    route_coordinates: List[Tuple[float, float]]
+    route_coordinates: PolylineCoords
     source: str = "demo"
     warning: str | None = None
     graph_radius_meters: int | None = None
@@ -63,7 +71,7 @@ class RouteResponse(BaseModel):
 class RouteIncident(BaseModel):
     type: Literal["road_closure", "congestion"]
     location: Tuple[float, float]
-    coordinates: List[Tuple[float, float]] = []
+    coordinates: PolylineCoords = []
     multiplier: float = 1.0
     delay_minutes: float | None = None
     description: str
@@ -76,7 +84,7 @@ class RouteOption(BaseModel):
     distance_km: float
     duration_mins: float
     total_distance_meters: float
-    route_coordinates: List[Tuple[float, float]]
+    route_coordinates: PolylineCoords
     estimated_time_seconds: float | None = None
     estimated_arrival: datetime | None = None
     traffic_segments: List[TrafficRouteSegment] = []
@@ -185,7 +193,7 @@ class OptimizedDeliveryLeg(BaseModel):
     package_id: int | None = None
     recipient_name: str = ""
     service_type: ServiceType = "REGULAR"
-    geometry: List[Tuple[float, float]]
+    geometry: PolylineCoords
     distance_km: float
     duration_mins: float
     estimated_time_seconds: float | None = None

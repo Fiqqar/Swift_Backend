@@ -128,7 +128,7 @@ Cari satu rute terbaik antara dua titik koordinat.
 {
   "status": "success",
   "total_distance_meters": 1234.56,
-  "route_coordinates": [[-6.8048, 110.8385], [-6.8052, 110.8390], "...", [-6.8100, 110.8500]],
+  "route_coordinates": "_p~iF~ps|U_ulLnnqC_mqNvxq`@",
   "source": "tile:semarang",
   "warning": null,
   "graph_radius_meters": 5000,
@@ -142,8 +142,8 @@ Cari satu rute terbaik antara dua titik koordinat.
 
 | Field | Keterangan |
 |---|---|
-| `route_coordinates` | Array `[lat, lon]` berurutan membentuk polyline |
-| `traffic_segments` | Indeks di `route_coordinates` yang terkena multiplier lalu lintas |
+| `route_coordinates` | **Encoded polyline string** (Google Maps / Mapbox, precision 5) dari titik `[lat, lon]` berurutan. Decode dengan `decodePolyline` |
+| `traffic_segments` | Indeks di titik hasil-decode `route_coordinates` yang terkena multiplier lalu lintas (urutan & jumlah titik identik dengan array asli sebelum di-encode) |
 | `estimated_arrival` | Perkiraan tiba (WIB) |
 | `warning` | Catatan (mis. fallback mode kendaraan) |
 
@@ -172,7 +172,7 @@ Cari beberapa opsi rute (rute utama + alternatif). Request body sama dengan
       "distance_km": 3.12,
       "duration_mins": 8.7,
       "total_distance_meters": 3120.4,
-      "route_coordinates": [[-6.8048, 110.8385], "...", [-6.8100, 110.8500]],
+      "route_coordinates": "_p~iF~ps|U_ulLnnqC_mqNvxq`@",
       "estimated_time_seconds": 521,
       "estimated_arrival": "2026-08-14T12:30:00+07:00",
       "traffic_segments": [],
@@ -180,7 +180,7 @@ Cari beberapa opsi rute (rute utama + alternatif). Request body sama dengan
         {
           "type": "congestion",
           "location": [-6.8070, 110.8420],
-          "coordinates": [],
+          "coordinates": "_yxnF`pb|U",
           "multiplier": 1.8,
           "delay_minutes": 3.0,
           "description": "Kepadatan lalu lintas",
@@ -264,7 +264,7 @@ Segmen jalan yang terkena penalti (untuk overlay di map).
       "edge_id": 12345,
       "multiplier": 3.0,
       "closure": false,
-      "coordinates": [[lat, lon], [lat, lon]]
+      "coordinates": "_p~iF~ps|U_ulLnnqC"
     }
   ],
   "source": "tile:semarang"
@@ -623,7 +623,8 @@ Health check server + status graph pathfinding.
 2. **CORS**: kalau frontend beda origin, tambahkan origin ke env `CORS_ORIGINS`
    (comma-separated) di `.env` lalu restart.
 3. **Generate types**: `npx openapi-typescript http://localhost:8000/openapi.json -o src/types/api.d.ts`
-4. **Polyline route**: `route_coordinates` tinggal dipakai langsung sebagai
-   koordinat Leaflet/Mapbox.
+4. **Polyline route**: `route_coordinates` (dan `geometry`, `incidents[].coordinates`,
+   segmen traffic) adalah **encoded polyline** (precision 5). Decode dulu sebelum
+   dipakai sebagai koordinat Leaflet/Mapbox — contoh: `decodePolyline(route_coordinates)`.
 5. **Timezone**: `estimated_arrival` dan semua field waktu memakai
    ISO-8601 UTC (akhiran `Z`).

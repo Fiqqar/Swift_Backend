@@ -150,7 +150,7 @@
     var allBounds = null;
 
     data.legs.forEach(function (leg, i) {
-      var coords = (leg.geometry || []).map(function (p) { return [p[0], p[1]]; });
+      var coords = decodePolyline(leg.geometry || '');
       if (!coords.length) return;
       var isActive = (i === activeIndex);
       var isDone = (i < activeIndex);
