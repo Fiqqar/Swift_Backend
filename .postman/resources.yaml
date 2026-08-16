@@ -1,0 +1,11 @@
+workspace:
+  id: 329f6fb8-b093-4276-970a-8e24d8a80e2d
+localResources:
+  specs:
+    - ../docs/openapi.json
+cloudResources:
+  collections:
+    ../postman/collections/WebSocket: 6a80509356f71125d7bb4aee
+    ../postman/collections/TEST2 API Engine: 54939930-d82df983-8a8b-43bd-b3d1-3963c0b5967d
+  environments:
+    ../postman/environments/Dev.environment.yaml: 54939930-0ec62368-7a17-4600-bfea-678a7154073a

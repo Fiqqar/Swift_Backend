@@ -1,0 +1,9 @@
+$kind: http-request
+description: Menghasilkan daftar segmen jalan yang sedang kena penalti beserta koordinatnya, berguna untuk visualisasi peta traffic.
+url: "{{baseUrl}}/api/v1/traffic/map"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Peta segmen jalan yang kena penalti.resources/examples
+order: 1000

@@ -1,0 +1,54 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/traffic/map"
+  method: GET
+  headers:
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "segments": [
+          {
+            "edge_id": 3167,
+            "multiplier": 9074.477639957284,
+            "closure": true,
+            "coordinates": [
+              [
+                2810.15150420062,
+                9667.48694879535
+              ],
+              [
+                1625.569229276318,
+                3972.4550342600996
+              ]
+            ]
+          },
+          {
+            "edge_id": 9571,
+            "multiplier": 8012.669744312888,
+            "closure": true,
+            "coordinates": [
+              [
+                722.8638501094408,
+                5554.7373711790015
+              ],
+              [
+                1291.7801008634833,
+                3244.3325240954478
+              ]
+            ]
+          }
+        ],
+        "source": null
+      }
+order: 1000

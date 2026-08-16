@@ -1,0 +1,46 @@
+$kind: http-request
+description: |-
+  Menentukan urutan stop paling efisien (TSP heuristic, EXPRESS diutamakan) lalu menghitung leg rute sungguhan per pasangan stop.
+
+  - **Wajib:** `deliveries` (minimal 1).
+  - **Titik awal (fallback chain):** `courier_position` (prioritas 1) → posisi kurir dari Redis `driver:pos:{kurir_id}` (prioritas 2, dari token JWT) → `hub_origin` (prioritas 3). Minimal satu dari `courier_position`/`hub_origin` wajib ada.
+  - **Opsional:** `mode`, `last_mile_precision`, `dynamic_rerouting`, `skip_traffic`, `return_to_hub`.
+
+  - Alamat tanpa `latitude`/`longitude` di-geocode (Nominatim).
+  - Error `400` bila geocode gagal / area tidak tercakup, `404` bila rute ke sebuah stop tidak ditemukan.
+url: "{{baseUrl}}/api/v1/pathfinding/find-optimized-delivery-route"
+method: POST
+headers:
+  Content-Type: application/json
+  Accept: application/json
+body:
+  type: json
+  content: |-
+    {
+        "deliveries": [
+            {
+                "package_id": 1,
+                "recipient_name": "Agus",
+                "service_type": "REGULAR",
+                "alamat": "Jalan Sukun Raya No.09, Besito Kulon, Besito, Kec. Gebog, Kabupaten Kudus, Jawa Tengah 59333",
+                "latitude": -6.753771,
+                "longitude": 110.842773
+            },
+            {
+                "package_id": 2,
+                "recipient_name": "Siti",
+                "service_type": "EXPRESS",
+                "alamat": "6RWV+M2H, Jl. Bae-Besito, Besito Kulon, Jurang, Kec. Gebog, Kabupaten Kudus, Jawa Tengah 59333",
+                "latitude": -6.759567,
+                "longitude": 110.842586
+            }
+        ],
+        "mode": "truck",
+        "last_mile_precision": true,
+        "dynamic_rerouting": true,
+        "skip_traffic": false,
+        "return_to_hub": false
+    }
+settings: {}
+examples: ./.resources/Rute pengantaran multi-stop (TSP).resources/examples
+order: 1000

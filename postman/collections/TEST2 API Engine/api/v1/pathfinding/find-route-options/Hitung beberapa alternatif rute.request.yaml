@@ -1,0 +1,32 @@
+$kind: http-request
+description: |-
+  Menghitung rute terbaik + alternatif (dengan penalti untuk menghindari overlap) antara `origin` dan `destination`.
+
+  - **Wajib:** `origin`, `destination`.
+  - **Opsional:** `mode`, `last_mile_precision`, `dynamic_rerouting`.
+
+  Jumlah alternatif dikontrol env `ALTERNATIVE_ROUTES_MAX` (default 3).
+url: "{{baseUrl}}/api/v1/pathfinding/find-route-options"
+method: POST
+headers:
+  Content-Type: application/json
+  Accept: application/json
+body:
+  type: json
+  content: |-
+    {
+      "origin": {
+        "latitude": -40.30287583682011,
+        "longitude": -141.16844062209313
+      },
+      "destination": {
+        "latitude": 53.23959444060915,
+        "longitude": 11.656593606103058
+      },
+      "mode": "car",
+      "last_mile_precision": null,
+      "dynamic_rerouting": null
+    }
+settings: {}
+examples: ./.resources/Hitung beberapa alternatif rute.resources/examples
+order: 1000

@@ -1,0 +1,67 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/pathfinding/find-optimized-delivery-route"
+  method: POST
+  headers:
+    - key: Content-Type
+      value: application/json
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+  body:
+    type: json
+    content: |-
+      {
+        "deliveries": [
+          {
+            "alamat": "string",
+            "package_id": null,
+            "recipient_name": "",
+            "service_type": "REGULAR",
+            "latitude": null,
+            "longitude": null
+          }
+        ],
+        "hub_origin": null,
+        "courier_position": null,
+        "mode": "truck",
+        "last_mile_precision": true,
+        "dynamic_rerouting": null,
+        "skip_traffic": false,
+        "return_to_hub": false
+      }
+response:
+  statusCode: 422
+  statusText: Unprocessable Entity (WebDAV) (RFC 4918)
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "detail": [
+          {
+            "loc": [
+              3605,
+              "string"
+            ],
+            "msg": "string",
+            "type": "string",
+            "input": "",
+            "ctx": {}
+          },
+          {
+            "loc": [
+              "string",
+              2061
+            ],
+            "msg": "string",
+            "type": "string",
+            "input": "",
+            "ctx": {}
+          }
+        ]
+      }
+order: 2000

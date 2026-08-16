@@ -33,6 +33,7 @@
   var routeOptions = null, selectedRouteId = 1;
   var routeLines = {}, incidentLayer = null, incidentPopups = [];
   var routeInfoPopups = [];
+  var nav = null;
 
   function $(id) { return document.getElementById(id); }
   function log(msg) {
@@ -424,6 +425,151 @@
     if (trafficLayer) { map.removeLayer(trafficLayer); trafficLayer = null; }
   }
 
+  /* --- Real-time navigation (WS /api/v1/ws/navigation) ------------------ */
+  var navWs = null, navRouteId = null, navSimTimer = null, navSimIdx = 0;
+  var navRouteCoords = null, navRouteLayer = null, navStatus = { enabled: false };
+
+  function navInd(msg, state) {
+    var el = $('nav-ind');
+    el.textContent = msg;
+    el.className = 'nav-ind' + (state ? ' ' + state : '');
+  }
+
+  function setNavProgress(data) {
+    $('nav-progress-wrap').style.display = 'block';
+    if (data.progress_pct != null) {
+      $('nav-progress-fill').style.width = Math.max(0, Math.min(100, data.progress_pct)) + '%';
+    }
+    $('nav-remaining').textContent = data.remaining_distance_m != null
+      ? 'sisa ' + Math.round(data.remaining_distance_m).toLocaleString('id-ID') + ' m'
+      : '-';
+    $('nav-eta').textContent = data.remaining_time_s != null
+      ? 'ETA ' + formatEta(data.remaining_time_s)
+      : '-';
+  }
+
+  function redrawNavPolyline(encoded) {
+    if (navRouteLayer) map.removeLayer(navRouteLayer);
+    var coords = decodePolyline(encoded || '');
+    if (!coords.length) return;
+    navRouteLayer = L.polyline(coords.map(function (p) { return [p[0], p[1]]; }), {
+      color: '#b3372f', weight: 6, opacity: 0.95, dashArray: '8 6', pane: 'route'
+    }).addTo(map);
+    map.fitBounds(navRouteLayer.getBounds(), { padding: [30, 30] });
+  }
+
+  function navSimulate() {
+    if (!navRouteCoords || navSimIdx >= navRouteCoords.length) return;
+    var p = navRouteCoords[Math.floor(navSimIdx)];
+    navSimIdx += 2;
+    sendNav({ type: 'location_update', lat: p[0], lng: p[1], current_route_id: navRouteId });
+  }
+
+  function sendNav(msg) {
+    if (navWs && navWs.readyState === WebSocket.OPEN) navWs.send(JSON.stringify(msg));
+  }
+
+  function stopNavigation() {
+    if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
+    if (navWs) { try { navWs.close(); } catch (e) {} navWs = null; }
+    if (navRouteLayer) { map.removeLayer(navRouteLayer); navRouteLayer = null; }
+    navRouteId = null; navRouteCoords = null; navSimIdx = 0;
+    $('btn-nav-start').textContent = 'Mulai Navigasi';
+    $('btn-nav-start').disabled = true;
+    $('btn-nav-apply').style.display = 'none';
+    $('nav-progress-wrap').style.display = 'none';
+    $('nav-progress-fill').style.width = '0%';
+    navInd(navStatus.enabled ? 'Navigasi: siap' : 'Navigasi: nonaktif');
+  }
+
+  function startNavigation() {
+    if (!navRouteId) return;
+    stopNavigation();
+    navInd('Navigasi: menghubungkan...');
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation');
+    navWs.onopen = function () {
+      sendNav({ type: 'start_navigation', route_id: navRouteId, leg_index: 0 });
+    };
+    navWs.onmessage = function (evt) {
+      var msg;
+      try { msg = JSON.parse(evt.data); } catch (e) { return; }
+      if (msg.type === 'error') {
+        navInd('Navigasi: error (' + msg.detail + ')', 'warn');
+        log('NAV error: ' + msg.detail);
+        return;
+      }
+      if (msg.type === 'ack' && msg.route_id != null) {
+        navInd('Navigasi: aktif (rute #' + msg.route_id + ')', 'active');
+        navRouteCoords = decodePolyline(msg.polyline || '');
+        navSimIdx = 0;
+        $('btn-nav-start').textContent = 'Berhenti Navigasi';
+        if (navSimTimer) clearInterval(navSimTimer);
+        navSimulate();
+        navSimTimer = setInterval(navSimulate, 4000);
+        return;
+      }
+      if (msg.type === 'route_progress') setNavProgress(msg);
+      if (msg.type === 'off_route_warning') {
+        navInd('Di luar rute (' + Math.round(msg.distance_m) + ' m dari jalur)', 'offroute');
+        pushToast('danger', 'Di luar rute',
+          Math.round(msg.distance_m) + ' m dari polyline rute aktif.');
+      }
+      if (msg.type === 'auto_rerouted' || msg.type === 'reroute_available') {
+        navInd('Rute baru tersedia (hemat ' + Math.round(msg.saving_s) + ' dtk)', 'active');
+        redrawNavPolyline(msg.polyline);
+        navRouteCoords = decodePolyline(msg.polyline || '');
+        navSimIdx = 0;
+        if (msg.applied) {
+          pushToast('warn', 'Auto-reroute diterapkan',
+            'Rute baru lebih cepat ' + Math.round(msg.saving_s) + ' dtk.');
+        } else {
+          $('btn-nav-apply').style.display = '';
+          $('btn-nav-apply').dataset.polyline = msg.polyline || '';
+        }
+      }
+    };
+    navWs.onclose = function () {
+      if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
+      navInd('Navigasi: nonaktif');
+    };
+    navWs.onerror = function () {
+      navInd('Navigasi: koneksi gagal', 'warn');
+    };
+  }
+
+  $('btn-nav-start').addEventListener('click', function () {
+    if (navSimTimer || (navWs && navWs.readyState === WebSocket.OPEN)) {
+      stopNavigation();
+    } else {
+      startNavigation();
+    }
+  });
+
+  $('btn-nav-apply').addEventListener('click', function () {
+    var polyline = $('btn-nav-apply').dataset.polyline;
+    if (!polyline) return;
+    $('btn-nav-apply').style.display = 'none';
+    redrawNavPolyline(polyline);
+    navRouteCoords = decodePolyline(polyline);
+    navSimIdx = 0;
+    log('Rute baru diterapkan manual.');
+  });
+
+  async function checkNavStatus() {
+    try {
+      var resp = await fetch('/api/v1/ws/navigation/status');
+      var data = await parseJson(resp);
+      if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
+      navStatus = data;
+      navInd(data.enabled
+        ? 'Navigasi: siap (aktifkan setelah hitung rute)'
+        : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)');
+    } catch (err) {
+      navInd('Navigasi: status tak terjangkau', 'warn');
+    }
+  }
+
   $('chk-traffic').addEventListener('change', function () {
     if (this.checked) {
       refreshTraffic();
@@ -486,6 +632,12 @@
         drawRoute(data);
       }
       renderRouteResult(data);
+      navRouteId = data.route_id || null;
+      $('btn-nav-start').disabled = !(navRouteId && navStatus.enabled);
+      navInd(navRouteId
+        ? (navStatus.enabled ? 'Navigasi: siap (rute #' + navRouteId + ')' : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)')
+        : 'Navigasi: nonaktif (server tidak set route_id)');
+      if (navRouteId && navStatus.enabled) log('INFO: aktifkan navigasi via tombol "Mulai Navigasi".');
       var best = (data.routes && data.routes.length) ? data.routes[0] : data;
       if (isPbf(data.source) || data.source === 'osm') {
         log('Rute OK: ' + best.total_distance_meters.toLocaleString('id-ID') + ' m, ' + (data.routes ? data.routes.length + ' opsi, ' : '') + decodePolyline(best.route_coordinates || '').length + ' titik (' + vehicleMode() + ', sumber=' + data.source + ')' + (data.warning ? ' - peringatan: ' + data.warning : ''));
@@ -560,6 +712,7 @@
   });
 
   $('btn-reset').addEventListener('click', function () {
+    stopNavigation();
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; $('btn-track').textContent = 'Mulai Lacak Posisi'; }
     hideLoading();
     clearTraffic();
@@ -619,6 +772,7 @@
       hideLoading();
     }
     checkTrafficStatus();
+    checkNavStatus();
   }
 
   async function checkTrafficStatus() {

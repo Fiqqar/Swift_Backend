@@ -1,0 +1,37 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/pathfinding/find-route"
+  method: POST
+  headers:
+    - key: Content-Type
+      value: application/json
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+  body:
+    type: json
+    content: |-
+      {
+        "origin": {
+          "latitude": -40.30287583682011,
+          "longitude": -141.16844062209313
+        },
+        "destination": {
+          "latitude": 53.23959444060915,
+          "longitude": 11.656593606103058
+        },
+        "mode": "car",
+        "last_mile_precision": null,
+        "dynamic_rerouting": null
+      }
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    content: "null"
+order: 1000

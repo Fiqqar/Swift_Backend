@@ -30,10 +30,11 @@ app/
   schemas/
     pathfinding.py                # Pydantic V2 (Coordinate, RouteRequest, RouteResponse)
   api/v1/
-    router.py                     # daftar router (pathfinding, traffic)
+    router.py                     # daftar router (pathfinding, traffic, tracking, navigation)
     endpoints/
-      pathfinding.py              # POST /find-route
+      pathfinding.py              # POST /find-route, /find-route-options, /find-optimized-delivery-route
       traffic.py                  # POST /update-weight, GET /penalties
+      navigation.py               # WS /ws/navigation (real-time navigation & auto-rerouting)
   services/
     cache_service.py              # route key, get/set, penalties helpers
     pathfinding/

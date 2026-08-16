@@ -1,0 +1,13 @@
+$kind: http-request
+description: |-
+  Menampilkan status konfigurasi WebSocket live-tracking `WS /api/v1/ws/driver/position`.
+
+  - `enabled`: apakah `ENABLE_LIVE_TRACKING` aktif (bila False, koneksi WS ditolak kode 1008).
+  - `max_rate_seconds`: batas interval pengiriman posisi (env `KURIR_POS_MAX_RATE_SECONDS`).
+url: "{{baseUrl}}/api/v1/ws/driver/position/status"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Status live-tracking kurir.resources/examples
+order: 1000

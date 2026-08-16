@@ -1,0 +1,15 @@
+$kind: http-request
+description: |-
+  Menampilkan detail batch termasuk kurir, hub, dan semua shipment di dalamnya.
+
+  - **Path wajib:** `batch_id`.
+  - Error `404` bila batch tidak ditemukan.
+url: "{{baseUrl}}/api/v1/batches/:batch_id"
+method: GET
+headers:
+  Accept: application/json
+pathVariables:
+  batch_id: "2605"
+settings: {}
+examples: ./.resources/Detail batch.resources/examples
+order: 2000

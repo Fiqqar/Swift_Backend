@@ -1,0 +1,22 @@
+$kind: http-request
+name: Set/memperbarui penalti traffic sebuah edge
+description: |-
+  Menyimpan penalti (multiplier) untuk satu edge ke Redis, dipakai saat pathfinding untuk memperlambat/menutup jalan.
+
+  - **Wajib:** `edge_id`, `multiplier` (>0; `inf` = jalan ditutup).
+  - Error `503` bila Redis tidak tersedia.
+url: "{{baseUrl}}/api/v1/traffic/update-weight"
+method: POST
+headers:
+  Content-Type: application/json
+  Accept: application/json
+body:
+  type: json
+  content: |-
+    {
+      "edge_id": 419,
+      "multiplier": 949.6635789262971
+    }
+settings: {}
+examples: ./.resources/Set-memperbarui penalti traffic sebuah edge.resources/examples
+order: 1000

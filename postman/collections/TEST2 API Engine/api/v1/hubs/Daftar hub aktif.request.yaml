@@ -1,0 +1,9 @@
+$kind: http-request
+description: Menampilkan semua hub aktif beserta koordinatnya. Berguna untuk `hub_origin` di pathfinding dan `hub_id` saat assign batch.
+url: "{{baseUrl}}/api/v1/hubs"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Daftar hub aktif.resources/examples
+order: 1000

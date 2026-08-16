@@ -18,10 +18,15 @@ logger = logging.getLogger("pathfinding")
 KURIR_POS_TTL = int(os.environ.get("KURIR_POS_TTL_SECONDS", "600"))
 KURIR_GEOFENCE_TTL = int(os.environ.get("KURIR_GEOFENCE_TTL_SECONDS", "86400"))
 KURIR_STOPS_TTL = int(os.environ.get("KURIR_STOPS_TTL_SECONDS", "300"))
+KURIR_NAV_TTL = int(os.environ.get("KURIR_NAV_TTL_SECONDS", "3600"))
 
 
 def pos_key(kurir_id: int) -> str:
     return f"driver:pos:{kurir_id}"
+
+
+def nav_route_key(kurir_id: int) -> str:
+    return f"driver:nav:{kurir_id}"
 
 
 def geofence_key(kurir_id: int, package_id: int) -> str:
@@ -86,6 +91,48 @@ async def get_kurir_position_latlon(redis, kurir_id: int) -> tuple | None:
     if pos is None:
         return None
     return (pos["lat"], pos["lon"])
+
+
+async def set_nav_route(redis, kurir_id: int, nav: dict) -> bool:
+    """Simpan snapshot rute aktif untuk real-time navigation (JSON).
+
+    Key `driver:nav:{kurir_id}` — diisi endpoint find-route /
+    find-optimized-delivery-route dan dibaca handler WS /ws/navigation.
+    """
+    if redis is None:
+        return False
+    try:
+        await redis.set(nav_route_key(kurir_id), json.dumps(nav),
+                        ex=KURIR_NAV_TTL)
+        return True
+    except Exception as exc:
+        logger.warning("Set nav route kurir %s gagal: %s", kurir_id, exc)
+        return False
+
+
+async def get_nav_route(redis, kurir_id: int) -> dict | None:
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(nav_route_key(kurir_id))
+    except Exception as exc:
+        logger.warning("Get nav route kurir %s gagal: %s", kurir_id, exc)
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+async def clear_nav_route(redis, kurir_id: int) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.delete(nav_route_key(kurir_id))
+    except Exception as exc:
+        logger.warning("Del nav route kurir %s gagal: %s", kurir_id, exc)
 
 
 async def get_geofence_state(redis, kurir_id: int, package_id: int) -> str | None:

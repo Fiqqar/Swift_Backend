@@ -1,0 +1,8 @@
+$kind: websocket-request
+description: ""
+url: "{{baseUrl}}/api/v1/ws/driver/position"
+headers:
+  Authorization: Bearer {{bearerToken}}
+settings: {}
+messages: ./.resources/Driver Position.resources/messages
+order: 1000

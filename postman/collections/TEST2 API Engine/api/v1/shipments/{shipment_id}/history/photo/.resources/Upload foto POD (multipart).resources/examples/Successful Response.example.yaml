@@ -1,0 +1,41 @@
+$kind: http-example
+request:
+  url: "{{baseUrl}}/api/v1/shipments/:shipment_id/history/photo"
+  method: POST
+  headers:
+    - key: Content-Type
+      value: multipart/form-data
+    - key: Accept
+      value: application/json
+    - key: Authorization
+      value: Bearer <token>
+      description: "Added as a part of security scheme: bearer"
+  pathVariables:
+    shipment_id: "431"
+  body:
+    type: formdata
+    content:
+      - type: text
+        key: file
+        value: string
+      - type: text
+        key: recipient_name
+        value: string
+      - type: text
+        key: latitude
+        value: "9374.089794413834"
+      - type: text
+        key: longitude
+        value: "2846.283896086802"
+      - type: text
+        key: keterangan
+        value: string
+response:
+  statusCode: 201
+  statusText: Created
+  headers:
+    Content-Type: application/json
+  body:
+    type: text
+    content: ""
+order: 1000

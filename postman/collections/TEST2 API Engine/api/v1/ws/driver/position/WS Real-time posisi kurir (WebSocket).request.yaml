@@ -1,0 +1,35 @@
+$kind: http-request
+description: |-
+  **Ini endpoint WebSocket** — tidak dapat diuji lewat tombol "Try it out" (Swagger hanya mendukung HTTP). Gunakan klien WS seperti `wscat`, Postman, atau library `websockets`.
+
+  **URL:** `ws://<host>/api/v1/ws/driver/position`
+
+  ### Autentikasi (handshake)
+  - Query param `?token=<JWT>` **atau** header `Authorization: Bearer <JWT>` (token dari `POST /api/v1/auth/login`).
+  - Gagal auth → server tutup koneksi kode `4401`.
+  - Bila `ENABLE_LIVE_TRACKING=0` → tutup kode `1008`.
+
+  ### Pesan dari klien
+  - `{"type":"ping"}` → server balas `{"type":"ack","ok":true,"ts":<unix>}`.
+  - `{"type":"position","lat":-6.80,"lon":110.83,"bearing":90,"speed":10}` → simpan ke Redis `driver:pos:{kurir_id}`, snap best-effort, cek geofence.
+
+  ### Pesan dari server
+  - `{"type":"ack","ok":true,"snapped":[lat,lon]|null,"ts":<unix>}` — posisi diterima.
+  - `{"type":"error","ok":false,"detail":"..."}` — JSON/koordinat tidak valid.
+  - `{"type":"geofence_enter","package_id":1,"distance_m":12.5,"radius_m":30}` — masuk radius stop.
+  - `{"type":"geofence_exit","package_id":1,"distance_m":45.2,"radius_m":30}` — keluar radius stop.
+
+  ### Keterbatasan
+  - Rate limit `KURIR_POS_MAX_RATE_SECONDS` (default 3 s) per koneksi.
+  - Geofence: radius 30 m; state machine per paket di Redis `driver:geofence:{kurir_id}:{package_id}` (event hanya dikirim saat transisi state).
+
+  Cek status konfigurasi via `GET /api/v1/ws/driver/position/status`.
+url: "{{baseUrl}}/api/v1/ws/driver/position"
+method: GET
+auth:
+  type: bearer
+  credentials:
+    token: "{{bearerToken}}"
+settings: {}
+examples: ./.resources/WS Real-time posisi kurir (WebSocket).resources/examples
+order: 2000

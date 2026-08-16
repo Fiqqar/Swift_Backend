@@ -1,0 +1,9 @@
+$kind: http-request
+description: Menampilkan semua kurir aktif. Berguna untuk memilih `kurir_id` saat assign batch.
+url: "{{baseUrl}}/api/v1/kurir"
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+examples: ./.resources/Daftar kurir aktif.resources/examples
+order: 1000
