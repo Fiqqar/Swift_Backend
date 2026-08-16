@@ -722,32 +722,87 @@ _POD_ALLOWED_TYPES = {
     "image/gif",
 }
 _MAX_POD_FILE_BYTES = 10 * 1024 * 1024
+_MAX_POD_FILES = 5
+
+# Brand HEIC/HEIF/AVIF (container ISO BMFF, box "ftyp").
+_ISO_BMFF_BRANDS = {
+    b"heic", b"heix", b"hevc", b"hevx",
+    b"heim", b"heis", b"hevm", b"hevs",
+    b"mif1", b"msf1", b"avif",
+}
+
+
+def _sniff_image_format(data: bytes) -> str | None:
+    """Deteksi format gambar dari isi file (magic bytes).
+
+    Content-Type pada header multipart bisa dipalsukan klien (mis. file PHP
+    berlabel ``image/jpeg``), jadi keputusan utama didasarkan pada isi file,
+    bukan header.
+    """
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _ISO_BMFF_BRANDS:
+        return "image/heic"
+    return None
+
+
+def _read_photo(upload: UploadFile, index: int):
+    """Baca satu file foto lalu validasi tipe (header + magic bytes) dan ukuran.
+
+    Mengembalikan (data, error, status). Hanya satu yang terisi: bila valid,
+    data terisi dan sisanya None; bila tidak valid, error + status HTTP terisi.
+    """
+    label = f"Foto #{index + 1}"
+    ctype = (upload.content_type or "").lower()
+    if ctype and ctype not in _POD_ALLOWED_TYPES:
+        return None, f"Tipe {label} tidak didukung: {ctype}", 415
+    # Baca maksimal batas + 1 byte supaya file raksasa tidak dimuat penuh.
+    data = upload.file.read(_MAX_POD_FILE_BYTES + 1)
+    if not data:
+        return None, f"{label} kosong", 400
+    if len(data) > _MAX_POD_FILE_BYTES:
+        return None, f"{label} terlalu besar (maks 10 MB)", 400
+    if _sniff_image_format(data) is None:
+        return None, (
+            f"{label} bukan file gambar yang valid "
+            "(isi dicek via magic bytes, bukan sekadar Content-Type)"
+        ), 415
+    return data, None, None
 
 
 @router.post("/shipments/{shipment_id}/history/photo", status_code=201,
              summary="Upload foto POD (multipart)",
              description=(
-                 "Mengunggah foto POD ke Cloudinary lalu otomatis membuat "
+                 "Mengunggah 1–5 foto POD ke Cloudinary lalu otomatis membuat "
                  "riwayat event `pod_submitted` dalam satu panggilan (upload "
                  "server-side).\n\n"
                  "- **Path wajib:** `shipment_id`.\n"
-                 "- **Form wajib:** `file` (image: jpeg/png/webp/heic/heif/gif, "
-                 "maks 10 MB).\n"
+                 "- **Form wajib:** `files` (1–5 file; image: "
+                 "jpeg/png/webp/heic/heif/gif, maks 10 MB per file).\n"
                  "- **Form opsional:** `recipient_name`, `latitude`, "
                  "`longitude`, `keterangan`.\n"
-                 "- Error `415` tipe tidak didukung, `400` file kosong/terlalu "
-                 "besar, `503` Cloudinary belum dikonfigurasi, `502` upload gagal."))
+                 "- Isi file diverifikasi via magic bytes, jadi file non-gambar "
+                 "seperti `shell.php.jpg` (Content-Type dipalsukan) ditolak.\n"
+                 "- Error `415` tipe/isi bukan gambar, `400` kosong/terlalu "
+                 "besar/terlalu banyak, `503` Cloudinary belum dikonfigurasi, "
+                 "`502` upload gagal."))
 async def upload_pod_photo(
     shipment_id: int,
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(...),
     recipient_name: str | None = Form(default=None),
     latitude: float | None = Form(default=None),
     longitude: float | None = Form(default=None),
     keterangan: str | None = Form(default=None),
     session: AsyncSession = Depends(get_session),
 ):
-    """Unggah foto POD ke Cloudinary lalu buat riwayat `pod_submitted` dalam
-    satu panggilan."""
+    """Unggah 1–N foto POD ke Cloudinary lalu buat satu riwayat
+    `pod_submitted` dalam satu panggilan."""
     s = await session.get(Shipment, shipment_id)
     if s is None:
         return err("Shipment tidak ditemukan", 404)
@@ -755,32 +810,27 @@ async def upload_pod_photo(
     if not cloudinary_configured():
         return err("Cloudinary belum dikonfigurasi (CLOUDINARY_* tidak terisi)", 503)
 
-    def _read(upload: UploadFile, label: str):
-        ctype = (upload.content_type or "").lower()
-        if ctype and ctype not in _POD_ALLOWED_TYPES:
-            return None, f"Tipe {label} tidak didukung: {ctype}"
-        data = upload.file.read()
-        if not data:
-            return None, f"{label} kosong"
-        if len(data) > _MAX_POD_FILE_BYTES:
-            return None, f"{label} terlalu besar (maks 10 MB)"
-        return data, None
+    if len(files) > _MAX_POD_FILES:
+        return err(f"Maksimal {_MAX_POD_FILES} foto per unggahan", 400)
 
-    photo_bytes, error = _read(file, "Foto")
-    if error:
-        return err(error, 415 if "didukung" in error else 400)
-
+    photo_urls: list[str] = []
     base_folder = f"{UPLOAD_FOLDER}/shipments/{shipment_id}"
-    try:
-        photo_url = upload_image(
-            photo_bytes,
-            f"{base_folder}/photo",
-            f"pod_{int(time.time())}_{uuid4().hex[:8]}",
-        )
-    except CloudinaryNotConfiguredError as e:
-        return err(str(e), 503)
-    except Exception as e:  # noqa: BLE001 - error upload diteruskan sebagai respons
-        return err(f"Upload Cloudinary gagal: {e}", 502)
+    for idx, upload in enumerate(files):
+        data, error, status = _read_photo(upload, idx)
+        if error:
+            return err(error, status)
+        assert data is not None  # valid => data pasti terisi
+        try:
+            photo_url = upload_image(
+                data,
+                f"{base_folder}/photo",
+                f"pod_{int(time.time())}_{uuid4().hex[:8]}",
+            )
+        except CloudinaryNotConfiguredError as e:
+            return err(str(e), 503)
+        except Exception as e:  # noqa: BLE001 - error upload diteruskan sebagai respons
+            return err(f"Upload Cloudinary gagal: {e}", 502)
+        photo_urls.append(photo_url)
 
     history = TrackingHistory(
         shipment_id=s.id,
@@ -789,7 +839,7 @@ async def upload_pod_photo(
         recipient_name=recipient_name,
         latitude=latitude,
         longitude=longitude,
-        photo_urls=[photo_url],
+        photo_urls=photo_urls,
     )
     session.add(history)
     await session.commit()

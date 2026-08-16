@@ -244,19 +244,23 @@ async def _run():
 
             # upload POD via Cloudinary (mock; tidak butuh credential asli)
             fake_url = "https://res.cloudinary.com/test/pod-mock.jpg"
+            u1, u2 = fake_url + "1", fake_url + "2"
             with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
                        return_value=True), \
                  patch("app.api.v1.endpoints.shipments.upload_image",
-                       return_value=fake_url):
+                       side_effect=[u1, u2]):
                 r = await c.post(
                     f"/api/v1/shipments/{cod_sid}/history/photo",
-                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")},
+                    files=[
+                        ("files", ("pod1.jpg", b"\xff\xd8\xff\xe0test1", "image/jpeg")),
+                        ("files", ("pod2.png", b"\x89PNG\r\n\x1a\ntest2", "image/png")),
+                    ],
                     data={"recipient_name": "Budi",
                           "latitude": "-6.8048", "longitude": "110.8385"})
                 assert r.status_code == 201, r.text
                 d = r.json()["data"]
                 assert d["event"] == "pod_submitted", d
-                assert d["photo_urls"] == [fake_url], d
+                assert d["photo_urls"] == [u1, u2], d
                 assert d["recipient_name"] == "Budi", d
                 assert d["latitude"] == -6.8048, d
 
@@ -265,14 +269,14 @@ async def _run():
             pods = [h for h in r.json()["data"]["history"]
                     if h["event"] == "pod_submitted"]
             assert len(pods) == 2, pods
-            assert any(h["photo_urls"] == [fake_url] for h in pods), pods
+            assert any(h["photo_urls"] == [u1, u2] for h in pods), pods
 
             # shipment tidak ada -> 404
             with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
                        return_value=True):
                 r = await c.post(
                     "/api/v1/shipments/999999/history/photo",
-                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")})
+                    files=[("files", ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg"))])
                 assert r.status_code == 404, r.text
 
             # Cloudinary belum dikonfigurasi -> 503
@@ -280,16 +284,62 @@ async def _run():
                        return_value=False):
                 r = await c.post(
                     f"/api/v1/shipments/{cod_sid}/history/photo",
-                    files={"file": ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg")})
+                    files=[("files", ("pod.jpg", b"\xff\xd8\xff\xe0test", "image/jpeg"))])
                 assert r.status_code == 503, r.text
 
-            # tipe file tidak didukung -> 415
+            # tipe file tidak didukung (Content-Type) -> 415
             with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
                        return_value=True):
                 r = await c.post(
                     f"/api/v1/shipments/{cod_sid}/history/photo",
-                    files={"file": ("pod.txt", b"hello", "text/plain")})
+                    files=[("files", ("pod.txt", b"hello", "text/plain"))])
                 assert r.status_code == 415, r.text
+
+            # Content-Type dipalsukan (shell.php.jpg) tapi isi bukan gambar -> 415
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files=[("files", ("shell.php.jpg",
+                                      b"<?php system($_GET['cmd']); ?>",
+                                      "image/jpeg"))])
+                assert r.status_code == 415, r.text
+                assert "bukan file gambar" in r.json()["message"], r.text
+
+            # salah satu file tidak valid -> seluruh request ditolak (all-or-nothing)
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True), \
+                 patch("app.api.v1.endpoints.shipments.upload_image",
+                       return_value=fake_url):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files=[
+                        ("files", ("ok.jpg", b"\xff\xd8\xff\xe0ok", "image/jpeg")),
+                        ("files", ("bad.txt", b"not an image", "text/plain")),
+                    ])
+                assert r.status_code == 415, r.text
+            r = await c.get(f"/api/v1/shipments/{cod_sid}/tracking")
+            assert r.status_code == 200, r.text
+            pods_after = [h for h in r.json()["data"]["history"]
+                          if h["event"] == "pod_submitted"]
+            assert len(pods_after) == len(pods), pods_after  # tidak ada riwayat baru
+
+            # terlalu banyak file -> 400
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files=[("files", ("p.jpg", b"\xff\xd8\xff\xe0x", "image/jpeg"))
+                           for _ in range(6)])
+                assert r.status_code == 400, r.text
+
+            # file kosong -> 400
+            with patch("app.api.v1.endpoints.shipments.cloudinary_configured",
+                       return_value=True):
+                r = await c.post(
+                    f"/api/v1/shipments/{cod_sid}/history/photo",
+                    files=[("files", ("empty.jpg", b"", "image/jpeg"))])
+                assert r.status_code == 400, r.text
 
             r = await c.post("/api/v1/pathfinding/geofence-check",
                              json={"current": {"latitude": -6.2, "longitude": 106.8},
