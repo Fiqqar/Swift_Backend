@@ -43,6 +43,7 @@ async def init_db() -> None:
     import app.models.batch
     import app.models.shipment
     import app.models.tracking_history
+    import app.models.driver_report
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "postgresql":

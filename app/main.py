@@ -252,6 +252,13 @@ async def lifespan(app: FastAPI):
         rag_task = asyncio.create_task(rag_ingestion_worker(app, redis_client))
         app.state.rag_task = rag_task
 
+    report_task = None
+    if os.environ.get("INTERNAL_REPORT_AGENT_ENABLED", "0") == "1":
+        from app.services.internal_report_agent import internal_report_agent
+        report_task = asyncio.create_task(
+            internal_report_agent(app, redis_client))
+        app.state.report_task = report_task
+
     try:
         yield
     finally:
@@ -271,6 +278,8 @@ async def lifespan(app: FastAPI):
             nav_task.cancel()
         if rag_task is not None:
             rag_task.cancel()
+        if report_task is not None:
+            report_task.cancel()
         await close_redis(redis_client)
         try:
             await dispose_db()
