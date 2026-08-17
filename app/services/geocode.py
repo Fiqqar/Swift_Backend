@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import re
 
@@ -107,6 +108,103 @@ async def _nominatim(alamat: str) -> tuple[float, float] | None:
         finally:
             if GEOCODE_RATE_DELAY > 0:
                 await asyncio.sleep(GEOCODE_RATE_DELAY)
+
+
+def _grid_key(lat: float, lon: float) -> str:
+    dlat = 0.0045
+    dlon = dlat / max(0.1, math.cos(math.radians(lat)))
+    return "%d,%d" % (math.floor(lat / dlat), math.floor(lon / dlon))
+
+
+async def _reverse_cache_get(redis, key: str) -> str | None:
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(key)
+    except Exception as exc:
+        logger.warning("Reverse geocode cache read gagal: %s", exc)
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return raw or None
+
+
+async def _reverse_cache_set(redis, key: str, city: str, ttl: int) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.set(key, city, ex=ttl)
+    except Exception as exc:
+        logger.warning("Reverse geocode cache write gagal: %s", exc)
+
+
+def _extract_city_from_reverse(data) -> str | None:
+    """Ekstrak nama kota dari respons Nominatim /reverse."""
+    if not isinstance(data, dict):
+        return None
+    address = data.get("address") or {}
+    for key in ("city", "town", "village", "county"):
+        value = str(address.get(key, "")).strip()
+        if value:
+            return value
+    display = str(data.get("display_name", "")).strip()
+    if display:
+        return display.split(",")[0].strip() or None
+    return None
+
+
+async def _nominatim_reverse(lat: float, lon: float) -> str | None:
+    """Reverse geocode via Nominatim, kembalikan nama kota (atau None)."""
+    async with _geocode_semaphore:
+        try:
+            async with httpx.AsyncClient(
+                timeout=GEOCODE_TIMEOUT,
+                headers={"User-Agent": GEOCODE_USER_AGENT},
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(
+                    f"{NOMINATIM_URL}/reverse",
+                    params={"lat": lat, "lon": lon, "format": "jsonv2"},
+                )
+            if resp.status_code != 200:
+                logger.warning(
+                    "Nominatim reverse %d untuk (%.5f,%.5f)",
+                    resp.status_code, lat, lon)
+                return None
+            data = resp.json()
+        except Exception as exc:
+            logger.warning(
+                "Nominatim reverse gagal untuk (%.5f,%.5f): %s",
+                lat, lon, exc)
+            return None
+        finally:
+            if GEOCODE_RATE_DELAY > 0:
+                await asyncio.sleep(GEOCODE_RATE_DELAY)
+    return _extract_city_from_reverse(data)
+
+
+async def reverse_geocode_city(redis, lat: float, lon: float,
+                               ttl: int | None = None) -> str | None:
+    """Ubah koordinat menjadi nama kota via Nominatim (cache per grid).
+
+    Kembalikan nama kota (city/town/village/county) atau None bila gagal.
+    """
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
+        return None
+    key = "reverse:" + _grid_key(lat_f, lon_f)
+    cached = await _reverse_cache_get(redis, key)
+    if cached:
+        return cached
+    city = await _nominatim_reverse(lat_f, lon_f)
+    if city:
+        await _reverse_cache_set(
+            redis, key, city, int(ttl) if ttl else int(GEOCODE_TTL))
+    return city
 
 
 async def geocode_address(redis, alamat: str) -> tuple[float, float] | None:

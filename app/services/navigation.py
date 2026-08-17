@@ -217,6 +217,20 @@ async def compute_reroute(app, redis, session: NavSession,
                 app, redis, (lat, lon), dest)
         except Exception as exc:
             logger.warning("[NAV] Gagal ambil penalti traffic: %s", exc)
+        # Penalti berita publik (RAG) di koridor rute aktif -> dest.
+        try:
+            from app.services import rag_traffic
+            if rag_traffic.rag_enabled():
+                corridor = session.coords if (
+                    session.coords and len(session.coords) >= 2
+                ) else [(lat, lon), (dest[0], dest[1])]
+                news_penalties = await rag_traffic.retrieve_and_evaluate_road_incidents(
+                    corridor, app=app, redis=redis)
+                for eid, mult in news_penalties.items():
+                    traffic_penalties[eid] = max(
+                        traffic_penalties.get(eid, 1.0), mult)
+        except Exception as exc:
+            logger.warning("[NAV] Gagal ambil penalti berita (RAG): %s", exc)
     try:
         response, _node_sequence, _final_penalties, _m = await _best_route(
             app, plan, redis, traffic_penalties, leg_payload, mode,
