@@ -743,7 +743,7 @@ async def find_route_options(payload: RouteRequest, request: Request):
 
     max_routes = max(1, _env_int("ALTERNATIVE_ROUTES_MAX", 3))
     bump = max(1.0, _env_float("ALTERNATIVE_ROUTE_BUMP", 8.0))
-    overlap_threshold = _env_float("ALTERNATIVE_ROUTE_MAX_OVERLAP", 0.8)
+    overlap_threshold = _env_float("ALTERNATIVE_ROUTE_MAX_OVERLAP", 0.7)
     incident_delay_minutes = max(0.0, _env_float("INCIDENT_DELAY_MINUTES", 3.0))
     last_mile = last_mile_enabled(payload)
 

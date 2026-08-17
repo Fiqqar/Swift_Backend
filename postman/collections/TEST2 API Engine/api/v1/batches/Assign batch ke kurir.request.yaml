@@ -1,11 +1,10 @@
 $kind: http-request
 description: |-
-  Membuat batch baru dan men-assign beberapa paket ke satu kurir. Kurir harus aktif & belum punya batch aktif; paket tidak boleh punya shipment aktif.
+  Assign batch ke kurir.
 
-  - **Wajib:** `paket_ids` (min 1), `kurir_id`.
+  - **Wajib:** `paket_ids`, `kurir_id`.
   - **Opsional:** `hub_id`.
-  - Error `404` kurir/hub/paket tidak ditemukan, `409` batch aktif duplikat atau paket sudah punya shipment aktif.
-url: "{{baseUrl}}/api/v1/batches"
+url: '{{baseUrl}}/api/v1/batches'
 method: POST
 headers:
   Content-Type: application/json
@@ -14,11 +13,9 @@ body:
   type: json
   content: |-
     {
-      "paket_ids": [
-        7338
-      ],
-      "kurir_id": 2201,
-      "hub_id": 2180
+      "paket_ids": [1, 2, 3],
+      "kurir_id": 1,
+      "hub_id": 1
     }
 settings: {}
 examples: ./.resources/Assign batch ke kurir.resources/examples

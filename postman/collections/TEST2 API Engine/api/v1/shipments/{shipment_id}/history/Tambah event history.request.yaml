@@ -1,31 +1,27 @@
 $kind: http-request
 description: |-
-  Menambahkan event riwayat manual untuk sebuah shipment.
+  Tambah event history.
 
   - **Path wajib:** `shipment_id`.
-  - **Body wajib:** `event` (`received_at_hub`/`departed_hub`/`pod_submitted`).
-  - **Opsional:** `keterangan`, `hub_id`, `recipient_name`, `latitude`, `longitude`, `photo_urls` (array URL Cloudinary).
-  - Error `404` bila shipment/hub tidak ditemukan.
-url: "{{baseUrl}}/api/v1/shipments/:shipment_id/history"
+  - **Body wajib:** `event`.
+url: '{{baseUrl}}/api/v1/shipments/:shipment_id/history'
 method: POST
 headers:
   Content-Type: application/json
   Accept: application/json
 pathVariables:
-  shipment_id: "431"
+  shipment_id: '1'
 body:
   type: json
   content: |-
     {
-      "event": "departed_hub",
-      "keterangan": null,
-      "hub_id": null,
-      "recipient_name": "string",
-      "latitude": null,
-      "longitude": 113.1363255825674,
+      "event": "pod_submitted",
+      "keterangan": "Paket diterima",
+      "recipient_name": "Budi",
+      "latitude": -6.81,
+      "longitude": 110.85,
       "photo_urls": [
-        "string",
-        "string"
+        "https://example.com/pod.jpg"
       ]
     }
 settings: {}

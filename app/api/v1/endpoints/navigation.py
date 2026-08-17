@@ -14,10 +14,12 @@ Pesan masuk:
 - `location_update` `{type, lat, lng, bearing?, speed?, current_route_id}` —
   simpan posisi, kirim `route_progress`, deteksi off-route, dan (bila lewat
   cooldown) auto-reroute.
+- `complete_leg` / `pod_submitted` `{type}` — kurir menyelesaikan satu
+  pengiriman; navigasi pindah otomatis ke leg berikutnya (multi-leg).
 - `ping` `{type}` — balas `ack`.
 
 Pesan keluar: `ack`, `error`, `route_progress`, `off_route_warning`,
-`reroute_available`, `auto_rerouted`. Semua geometri memakai
+`reroute_available`, `auto_rerouted`, `route_complete`. Semua geometri memakai
 `encode_polyline(..., 5)`.
 """
 
@@ -29,18 +31,22 @@ import time
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
 from app.core.security import decode_access_token
+from app.services import ai_agent
 from app.services.navigation import (
+    AI_REROUTE_ENABLED,
     AUTO_REROUTE,
     NAV_PROGRESS_MIN_INTERVAL_SECONDS,
     OFF_ROUTE_THRESHOLD_M,
     REROUTE_COOLDOWN_SECONDS,
     NavSession,
+    advance_leg,
     compute_reroute,
     point_to_polyline_distance_m,
     remaining_progress,
 )
 from app.services.polyline import encode_polyline
 from app.services.tracking import (
+    clear_nav_route,
     get_nav_route,
     set_kurir_position,
 )
@@ -184,16 +190,81 @@ async def _handle_location_update(websocket: WebSocket, app,
         return
     dist = point_to_polyline_distance_m(lat, lon, session.coords)
     now = time.time()
+
+    async def _send_off_route_warning() -> None:
+        await websocket.send_json({
+            "type": "off_route_warning", "ok": True,
+            "route_id": session.route_id,
+            "distance_m": round(dist, 2),
+            "threshold_m": OFF_ROUTE_THRESHOLD_M,
+            "ts": int(time.time()),
+        })
+
     if dist > OFF_ROUTE_THRESHOLD_M:
+        was_active = session.off_route_active
+        if AI_REROUTE_ENABLED and now >= session.cooldown_until:
+            from app.services.ai_agent import (
+                build_reroute_context,
+                decide_reroute,
+            )
+            decision = await decide_reroute(
+                build_reroute_context(
+                    session, lat, lon, hint="off_route",
+                    extra={
+                        "off_route_distance_m": round(dist, 2),
+                        "threshold_m": OFF_ROUTE_THRESHOLD_M,
+                    }),
+                "off_route",
+                app=app,
+                redis=redis,
+                session=session,
+            )
+            if decision is not None:
+                action = decision.get("action")
+                if action == "ignore":
+                    session.off_route_active = False
+                    session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
+                    logger.info(
+                        "[NAV] AI abaikan off-route kurir %s (%s).",
+                        session.kurir_id, decision.get("reason"))
+                    return
+                if action == "apply":
+                    session.off_route_active = True
+                    session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
+                    if not was_active:
+                        await _send_off_route_warning()
+                    old_prog = remaining_progress(session, lat, lon)
+                    response = await compute_reroute(
+                        app, redis, session, lat, lon, traffic=True)
+                    if response is not None:
+                        session.coords = list(response.route_coordinates)
+                        new_eta_s = response.estimated_time_seconds or 0.0
+                        await websocket.send_json({
+                            "type": "auto_rerouted" if AUTO_REROUTE
+                            else "reroute_available",
+                            "ok": True,
+                            "route_id": session.route_id,
+                            "polyline": encode_polyline(
+                                response.route_coordinates, 5),
+                            "saving_s": round(
+                                (old_prog["remaining_time_s"] - new_eta_s)
+                                if old_prog else 0.0, 1),
+                            "eta_s": round(new_eta_s, 1),
+                            "applied": AUTO_REROUTE,
+                            "reason": "off_route",
+                        })
+                    return
+                session.off_route_active = True
+                session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
+                if not was_active:
+                    await _send_off_route_warning()
+                logger.info(
+                    "[NAV] AI tunda reroute kurir %s (%s).",
+                    session.kurir_id, decision.get("reason"))
+                return
         if not session.off_route_active:
             session.off_route_active = True
-            await websocket.send_json({
-                "type": "off_route_warning", "ok": True,
-                "route_id": session.route_id,
-                "distance_m": round(dist, 2),
-                "threshold_m": OFF_ROUTE_THRESHOLD_M,
-                "ts": int(time.time()),
-            })
+            await _send_off_route_warning()
         if now >= session.cooldown_until:
             session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
             old_prog = remaining_progress(session, lat, lon)
@@ -220,6 +291,47 @@ async def _handle_location_update(websocket: WebSocket, app,
         session.off_route_active = False
 
 
+async def _handle_complete_leg(websocket: WebSocket, session: NavSession,
+                               redis) -> None:
+    """Kurir menyelesaikan satu pengiriman (POD) → pindah ke leg berikutnya."""
+    if session.route_id is None:
+        await websocket.send_json({
+            "type": "error", "ok": False,
+            "detail": "Tidak ada rute aktif untuk diselesaikan."})
+        return
+    nav = await get_nav_route(redis, session.kurir_id)
+    if nav is None:
+        await websocket.send_json({
+            "type": "error", "ok": False,
+            "detail": "Snapshot rute tidak ditemukan di Redis."})
+        return
+    result = advance_leg(session, nav)
+    if result is None:
+        await websocket.send_json({
+            "type": "error", "ok": False,
+            "detail": "Snapshot rute tidak cocok / leg tidak valid."})
+        return
+    if result.get("done"):
+        await clear_nav_route(redis, session.kurir_id)
+        await websocket.send_json({
+            "type": "route_complete", "ok": True,
+            "route_id": session.route_id, "ts": int(time.time())})
+        return
+    await websocket.send_json({
+        "type": "ack", "ok": True,
+        "action": "complete_leg",
+        "route_id": session.route_id,
+        "leg_index": result["leg_index"],
+        "kind": session.kind,
+        "package_id": result.get("package_id"),
+        "recipient_name": result.get("recipient_name"),
+        "dest": result.get("dest"),
+        "polyline": result.get("polyline"),
+        "off_route_threshold_m": OFF_ROUTE_THRESHOLD_M,
+        "ts": int(time.time()),
+    })
+
+
 @router.get("/ws/navigation/status",
             summary="Status real-time navigation",
             description=(
@@ -244,6 +356,14 @@ async def navigation_status(request: Request):
         "reroute_cooldown_s": REROUTE_COOLDOWN_SECONDS,
         "auto_reroute": AUTO_REROUTE,
         "max_rate_seconds": _NAV_POS_MAX_RATE_SECONDS,
+        "ai": {
+            "enabled": bool(ai_agent.AI_REROUTE_ENABLED
+                            and ai_agent.GEMINI_API_KEY),
+            "backup_key_available": bool(ai_agent.GEMINI_API_KEY_2),
+            "circuit_breaker_open": ai_agent._breaker_open(),
+            "concurrent_slots": ai_agent._MAX_CONCURRENT,
+            "timeout_s": ai_agent.GEMINI_REROUTE_TIMEOUT_S,
+        },
     }
 
 
@@ -288,6 +408,9 @@ async def navigation_ws(websocket: WebSocket):
             if mtype == "start_navigation":
                 await _handle_start_navigation(
                     websocket, session, redis, msg)
+                continue
+            if mtype in ("complete_leg", "pod_submitted"):
+                await _handle_complete_leg(websocket, session, redis)
                 continue
             if mtype != "location_update":
                 continue

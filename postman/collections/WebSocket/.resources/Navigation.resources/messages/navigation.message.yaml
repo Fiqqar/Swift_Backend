@@ -1,0 +1,12 @@
+$kind: websocket-message
+content: "{\r
+
+  \    \"type\": \"start_navigation\",\r
+
+  \    \"route_id\": 1,\r
+
+  \    \"leg_index\": 3\r
+
+  }"
+contentType: json
+order: 1786947960971

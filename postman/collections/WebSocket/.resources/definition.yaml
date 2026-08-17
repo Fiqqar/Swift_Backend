@@ -1,2 +1,16 @@
 $kind: collection
-description: ""
+description: |-
+  Koleksi koneksi WebSocket realtime: posisi kurir (`/api/v1/ws/driver/position`)
+  dan navigasi/auto-rerouting (`/api/v1/ws/navigation`).
+
+  Auth handshake memakai `token={{bearerToken}}` (query param atau header
+  `Authorization: Bearer {{bearerToken}}`). Jalankan `POST /api/v1/auth/login`
+  di koleksi TEST2 API Engine agar `bearerToken` terisi otomatis.
+variables:
+  baseUrl: http://localhost:8000
+auth:
+  - id: 3b9d2f7e-6c41-4e8a-b5d1-9c04a7f1e2d3
+    type: bearer
+    name: bearer auth
+    credentials:
+      token: "{{bearerToken}}"

@@ -1,9 +1,7 @@
 name: Dev
-color: null
 values:
   - key: baseUrl
-    value: ""
-    enabled: true
+    value: 'http://localhost:8000'
   - key: bearerToken
-    value: ""
-    enabled: true
+    value: ''
+color: 0

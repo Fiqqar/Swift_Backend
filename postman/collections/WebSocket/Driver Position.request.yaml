@@ -1,6 +1,7 @@
 $kind: websocket-request
+name: Driver Position
 description: ""
-url: "{{baseUrl}}/api/v1/ws/driver/position"
+url: "{{baseUrl}}/api/v1/ws/driver/position?token={{bearerToken}}"
 headers:
   Authorization: Bearer {{bearerToken}}
 settings: {}

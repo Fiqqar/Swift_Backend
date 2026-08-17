@@ -1,2 +1,5 @@
 name: Globals
-values: []
+values:
+  - key: baseUrl
+    value: http://localhost:8000
+    enabled: true
