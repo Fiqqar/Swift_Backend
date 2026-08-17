@@ -10,16 +10,17 @@ ROUTE = [(-6.8048, 110.8385), (-6.8052, 110.8390), (-6.8100, 110.8500)]
 
 
 @pytest.fixture(autouse=True)
-def _reset_rag():
+def _reset_rag(monkeypatch):
     rag_traffic.reset_for_test()
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_DYNAMIC_CITY", False)
     yield
     rag_traffic.reset_for_test()
 
 
-def _populate(items, vectors=None):
+def _populate(items, vectors=None, city="Kudus"):
     if vectors is None:
         vectors = [[1.0, 0.0]] * len(items)
-    asyncio.run(rag_traffic._store.replace(items, vectors))
+    asyncio.run(rag_traffic._store.set_city(city, items, vectors))
 
 
 # ---------------------------------------------------------------------------
@@ -80,18 +81,30 @@ def test_parse_evaluation_invalid():
 
 
 # ---------------------------------------------------------------------------
-# In-memory vector store
+# In-memory vector store (per kota)
 # ---------------------------------------------------------------------------
-def test_store_replace_and_search():
+def test_store_per_city_and_search():
     store = rag_traffic._NewsStore()
-    asyncio.run(store.replace([{"id": "a"}, {"id": "b"}],
-                              [[1, 0], [0, 1]]))
+    asyncio.run(store.set_city("A", [{"id": "a"}], [[1, 0]]))
+    asyncio.run(store.set_city("B", [{"id": "b"}], [[0, 1]]))
+    assert store.size() == 2
+    assert store.has_city("A") and store.has_city("B")
+    assert store.city_size("A") == 1
     hits = asyncio.run(store.search([1, 0], 2))
     assert [h["id"] for h in hits] == ["a", "b"]
-    assert store.size() == 2
-    assert store.last_updated() > 0
+    assert store.last_updated("A") > 0
     store.clear()
     assert store.size() == 0
+    assert not store.has_city("A")
+
+
+def test_store_set_city_replaces_same_city():
+    store = rag_traffic._NewsStore()
+    asyncio.run(store.set_city("A", [{"id": "a"}], [[1, 0]]))
+    asyncio.run(store.set_city("A", [{"id": "a2"}], [[1, 0]]))
+    assert store.city_size("A") == 1
+    hits = asyncio.run(store.search([1, 0], 5))
+    assert [h["id"] for h in hits] == ["a2"]
 
 
 def test_store_search_empty():
@@ -163,6 +176,112 @@ def test_ingest_road_news_no_key_returns_zero(monkeypatch):
     monkeypatch.setattr(ai_agent, "GEMINI_API_KEY", "")
     monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
     assert asyncio.run(rag_traffic.ingest_road_news()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Kota dinamis (deteksi + ingestion on-demand)
+# ---------------------------------------------------------------------------
+def test_detect_city_from_coords_reverse(monkeypatch):
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_DYNAMIC_CITY", True)
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
+
+    async def fake_reverse(redis, lat, lon, ttl=None):
+        return "Semarang"
+
+    monkeypatch.setattr("app.services.geocode.reverse_geocode_city",
+                        fake_reverse)
+    city = asyncio.run(rag_traffic._detect_city_from_coords(ROUTE, None))
+    assert city == "Semarang"
+
+
+def test_detect_city_from_coords_fallback_static(monkeypatch):
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_DYNAMIC_CITY", True)
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
+
+    async def fake_reverse(redis, lat, lon, ttl=None):
+        return None
+
+    monkeypatch.setattr("app.services.geocode.reverse_geocode_city",
+                        fake_reverse)
+    assert asyncio.run(
+        rag_traffic._detect_city_from_coords(ROUTE, None)) == "Kudus"
+
+
+def test_detect_city_from_coords_disabled_uses_static(monkeypatch):
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_DYNAMIC_CITY", False)
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
+
+    async def fake_reverse(redis, lat, lon, ttl=None):
+        raise AssertionError("reverse geocode tak boleh dipanggil")
+
+    monkeypatch.setattr("app.services.geocode.reverse_geocode_city",
+                        fake_reverse)
+    assert asyncio.run(
+        rag_traffic._detect_city_from_coords(ROUTE, None)) == "Kudus"
+
+
+def test_detect_city_from_coords_no_coords_uses_static(monkeypatch):
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_DYNAMIC_CITY", True)
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
+    assert asyncio.run(
+        rag_traffic._detect_city_from_coords([], None)) == "Kudus"
+
+
+def test_ensure_city_news_spawns_once(monkeypatch):
+    calls = []
+
+    async def fake_ingest(redis=None, city=None):
+        calls.append(city)
+        items = [{"id": "n1", "title": "X", "summary": "s",
+                  "lat": -6.8, "lng": 110.84, "radius_m": 300,
+                  "severity": "HIGH"}]
+        await rag_traffic._store.set_city(city, items, [[1.0, 0.0]])
+        return 1
+
+    monkeypatch.setattr(rag_traffic, "ingest_road_news", fake_ingest)
+
+    async def run():
+        assert await rag_traffic._ensure_city_news(None, "Kudus") is False
+        assert rag_traffic._ingest_tasks.get("Kudus") is not None
+        assert await rag_traffic._ensure_city_news(None, "Kudus") is False
+        await rag_traffic._ingest_tasks["Kudus"]
+        assert await rag_traffic._ensure_city_news(None, "Kudus") is True
+        assert rag_traffic._ingest_tasks.get("Kudus") is None
+
+    asyncio.run(run())
+    assert calls == ["Kudus"]
+
+
+def test_ensure_city_news_empty_city_returns_false():
+    assert asyncio.run(rag_traffic._ensure_city_news(None, "")) is False
+
+
+def test_ingest_from_redis_cache_with_vectors(monkeypatch):
+    monkeypatch.setattr(ai_agent, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(rag_traffic, "RAG_NEWS_CITY", "Kudus")
+
+    async def fake_get(redis, key):
+        return {
+            "items": [{"id": "n1", "title": "Banjir", "summary": "s",
+                       "lat": -6.8, "lng": 110.84, "radius_m": 300,
+                       "severity": "HIGH"}],
+            "vectors": [[1.0, 0.0]],
+        }
+
+    monkeypatch.setattr(
+        "app.services.traffic.smart_hybrid._redis_get_json", fake_get)
+    embed_calls = []
+
+    async def fake_embed(texts, timeout_s=None):
+        embed_calls.append(texts)
+        return [[1.0, 0.0]] * len(texts)
+
+    monkeypatch.setattr(rag_traffic, "_embed_texts", fake_embed)
+
+    count = asyncio.run(rag_traffic.ingest_road_news(redis=object()))
+    assert count == 1
+    assert rag_traffic._store.has_city("Kudus")
+    assert embed_calls == []
 
 
 # ---------------------------------------------------------------------------

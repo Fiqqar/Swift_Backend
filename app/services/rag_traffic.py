@@ -1,14 +1,19 @@
 """RAG Berita Publik (Google Gemini Grounding) untuk penalti rute.
 
 Fitur:
-- In-memory vector store berisi berita gangguan lalu lintas per kota
+- In-memory vector store per kota berisi berita gangguan lalu lintas
   (hasil ingestion Gemini Grounding + Google Search).
-- Ingestion worker `rag_ingestion_worker` memperbarui store secara periodik
-  (didaftarkan dari lifespan `app/main.py`).
-- `retrieve_and_evaluate_road_incidents(polyline_coords)`: ambil berita yang
-  relevan di dekat koridor rute, evaluasi penalti via Gemini, lalu snap
-  koordinat terdampak ke edge graf -> dict {edge_id: multiplier} siap
-  digabung ke penalti rute (mis. di `compute_reroute`).
+- Ingestion worker `rag_ingestion_worker` memperbarui store `RAG_NEWS_CITY`
+  secara periodik (didaftarkan dari lifespan `app/main.py`).
+- Kota dinamis: `_detect_city_from_coords` menentukan kota tempat kurir
+  berada via reverse geocode Nominatim dari koordinat polyline rute aktif,
+  lalu `_ensure_city_news` mengingest berita kota itu on-demand
+  (fire-and-forget) sehingga query Grounding menyesuaikan lokasi kurir.
+- `retrieve_and_evaluate_road_incidents(polyline_coords, *, app, redis)`:
+  ambil berita yang relevan di dekat koridor rute, evaluasi penalti via
+  Gemini, lalu snap koordinat terdampak ke edge graf -> dict
+  {edge_id: multiplier} siap digabung ke penalti rute (mis. di
+  `compute_reroute`).
 
 Semua operasi opsional dan di-gate `RAG_NEWS_ENABLED` (default off).
 Kegagalan apa pun bersifat non-fatal: memanggil balik ke routing biasa.
@@ -43,6 +48,12 @@ RAG_NEWS_MAX_PENALTY = ai_agent._env_float("RAG_NEWS_MAX_PENALTY", 3.0)
 RAG_NEWS_TIMEOUT_S = ai_agent._env_float("RAG_NEWS_TIMEOUT_S", 2.0)
 RAG_NEWS_EMBED_MODEL = os.environ.get(
     "RAG_NEWS_EMBED_MODEL", "text-embedding-004").strip()
+# 1 = deteksi kota dinamis dari koordinat rute via reverse geocode
+#     (fallback ke RAG_NEWS_CITY bila gagal). Default aktif.
+RAG_NEWS_DYNAMIC_CITY = ai_agent._env_bool("RAG_NEWS_DYNAMIC_CITY", True)
+# TTL (detik) cache hasil reverse geocode kota per grid di Redis.
+RAG_NEWS_CITY_CACHE_TTL_S = ai_agent._env_float(
+    "RAG_NEWS_CITY_CACHE_TTL_S", 3600.0)
 
 _SEVERITY_MULTIPLIER = {
     "LOW": 1.2,
@@ -158,38 +169,50 @@ def _parse_evaluation(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# In-memory vector store (cosine similarity, singleton + lock).
+# In-memory vector store per kota (cosine similarity, singleton + lock).
 # ---------------------------------------------------------------------------
 class _NewsStore:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._docs: list[dict] = []
-        self._vectors: list[list[float]] = []
-        self._last_updated = 0.0
+        self._docs_by_city: dict[str, list[dict]] = {}
+        self._vectors_by_city: dict[str, list[list[float]]] = {}
+        self._updated_by_city: dict[str, float] = {}
 
     def size(self) -> int:
-        return len(self._docs)
+        return sum(len(docs) for docs in self._docs_by_city.values())
 
-    def last_updated(self) -> float:
-        return self._last_updated
+    def has_city(self, city: str) -> bool:
+        return bool(self._docs_by_city.get(city))
+
+    def city_size(self, city: str) -> int:
+        return len(self._docs_by_city.get(city, []))
+
+    def last_updated(self, city: str | None = None) -> float:
+        if city is None:
+            return max(self._updated_by_city.values()) \
+                if self._updated_by_city else 0.0
+        return self._updated_by_city.get(city, 0.0)
 
     def clear(self) -> None:
-        self._docs = []
-        self._vectors = []
-        self._last_updated = 0.0
+        self._docs_by_city = {}
+        self._vectors_by_city = {}
+        self._updated_by_city = {}
 
-    async def replace(self, items: list[dict],
-                      vectors: list[list[float]]) -> None:
+    async def set_city(self, city: str, items: list[dict],
+                       vectors: list[list[float]]) -> None:
         async with self._lock:
-            self._docs = list(items)
-            self._vectors = [list(v) for v in vectors]
-            self._last_updated = time.time()
+            self._docs_by_city[city] = list(items)
+            self._vectors_by_city[city] = [list(v) for v in vectors]
+            self._updated_by_city[city] = time.time()
 
     async def search(self, query_vec: list[float],
                      top_k: int) -> list[dict]:
         async with self._lock:
-            docs = list(self._docs)
-            vectors = list(self._vectors)
+            docs: list[dict] = []
+            vectors: list[list[float]] = []
+            for city in self._docs_by_city:
+                docs.extend(self._docs_by_city[city])
+                vectors.extend(self._vectors_by_city.get(city, []))
         if not vectors:
             return []
         scored = sorted(
@@ -200,11 +223,19 @@ class _NewsStore:
 
 _store = _NewsStore()
 
+# Tracking ingestion fire-and-forget per kota (hindari dobel & re-spam).
+_last_ingest_by_city: dict[str, float] = {}
+_ingest_tasks: dict[str, asyncio.Task] = {}
+
 
 def reset_for_test() -> None:
-    """Kosongkan store & cache evaluasi (untuk pengujian)."""
+    """Kosongkan store, cache evaluasi & state ingestion (untuk pengujian)."""
     _store.clear()
     _eval_cache.clear()
+    for task in _ingest_tasks.values():
+        task.cancel()
+    _ingest_tasks.clear()
+    _last_ingest_by_city.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +327,7 @@ async def ingest_road_news(redis=None, city: str | None = None) -> int:
         r"[^a-z0-9]+", "_", city.lower()).strip("_")
     cached = await _redis_get_json(redis, redis_key)
     items = cached.get("items") if isinstance(cached, dict) else None
+    vectors = cached.get("vectors") if isinstance(cached, dict) else None
     if isinstance(items, list) and items:
         logger.info("[RAG] Pakai cache berita %s (%d item).",
                     redis_key, len(items))
@@ -332,20 +364,25 @@ async def ingest_road_news(redis=None, city: str | None = None) -> int:
                 else:
                     logger.warning("[RAG] Grounding gagal: %s", exc)
         items = _parse_news_items(text) if text else []
-        if items:
-            await _redis_set_json(
-                redis, redis_key, {"items": items},
-                int(RAG_NEWS_CACHE_TTL_S))
-    if items:
-        vectors = await _embed_texts(
+        vectors = None
+        if not items:
+            return 0
+    # Vektor cache kadaluarsa (bentuk lama) -> embed ulang & perbarui cache.
+    if not isinstance(vectors, list) or len(vectors) != len(items):
+        embedded = await _embed_texts(
             ["%s. %s" % (it["title"], it["summary"]) for it in items],
             timeout_s=max(RAG_NEWS_TIMEOUT_S, 15.0))
-        if vectors and len(vectors) == len(items):
-            await _store.replace(items, vectors)
-            return len(items)
-        logger.warning(
-            "[RAG] Embedding berita gagal; store tidak diperbarui.")
-    return 0
+        if not embedded or len(embedded) != len(items):
+            logger.warning(
+                "[RAG] Embedding berita gagal; store %s tidak diperbarui.",
+                city)
+            return 0
+        vectors = embedded
+        await _redis_set_json(
+            redis, redis_key, {"items": items, "vectors": vectors},
+            int(RAG_NEWS_CACHE_TTL_S))
+    await _store.set_city(city, items, vectors)
+    return len(items)
 
 
 async def rag_ingestion_worker(app, redis=None):
@@ -368,6 +405,80 @@ async def rag_ingestion_worker(app, redis=None):
         except Exception as exc:
             logger.warning("[RAG] Ingestion berita gagal: %s", exc)
         await asyncio.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
+# Kota dinamis (reverse geocode) & ingestion on-demand per kota.
+# ---------------------------------------------------------------------------
+def _static_city() -> str:
+    return (RAG_NEWS_CITY or "").strip()
+
+
+async def _detect_city_from_coords(coords: list, redis) -> str:
+    """Tentukan kota dari koordinat polyline rute aktif.
+
+    Reverse geocode titik pertama polyline via Nominatim (cache per grid di
+    Redis). Bila nonaktif / gagal / tidak ada koordinat, fallback ke
+    `RAG_NEWS_CITY` statis.
+    """
+    if not RAG_NEWS_DYNAMIC_CITY:
+        return _static_city()
+    point = None
+    for p in coords or []:
+        try:
+            point = (float(p[0]), float(p[1]))
+            break
+        except (TypeError, ValueError, IndexError):
+            continue
+    if point is None:
+        return _static_city()
+    try:
+        from app.services.geocode import reverse_geocode_city
+
+        city = await reverse_geocode_city(
+            redis, point[0], point[1],
+            ttl=int(RAG_NEWS_CITY_CACHE_TTL_S))
+        if city:
+            return city
+    except Exception as exc:
+        logger.warning("[RAG] Reverse geocode kota gagal: %s", exc)
+    return _static_city()
+
+
+async def _ingest_and_mark(redis, city: str) -> None:
+    """Jalankan ingestion untuk satu kota lalu catat timestamp-nya."""
+    try:
+        count = await ingest_road_news(redis, city=city)
+        if count:
+            logger.info("[RAG] Berita kota '%s' siap: %d item.", city, count)
+    except Exception as exc:
+        logger.warning("[RAG] Ingestion on-demand kota '%s' gagal: %s",
+                       city, exc)
+    finally:
+        _last_ingest_by_city[city] = time.monotonic()
+        _ingest_tasks.pop(city, None)
+
+
+async def _ensure_city_news(redis, city: str) -> bool:
+    """Pastikan store berisi berita untuk `city` (fire-and-forget).
+
+    Return True bila data kota sudah tersedia di store (siap dipakai).
+    Bila belum, spawn task ingestion dan return False — siklus reroute
+    berikutnya akan memakai berita yang baru.
+    """
+    if not city:
+        return False
+    interval = max(60.0, RAG_NEWS_INGEST_INTERVAL_S)
+    if _store.has_city(city):
+        last = _last_ingest_by_city.get(city, 0.0)
+        if time.monotonic() - last < interval:
+            return True
+    existing = _ingest_tasks.get(city)
+    if existing is not None and not existing.done():
+        return False
+    task = asyncio.create_task(_ingest_and_mark(redis, city))
+    _ingest_tasks[city] = task
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -583,18 +694,26 @@ async def _snap_incidents_to_edges(evaluated: list[dict],
 
 
 async def retrieve_and_evaluate_road_incidents(
-        polyline_coords, *, app=None) -> dict[int, float]:
+        polyline_coords, *, app=None, redis=None) -> dict[int, float]:
     """Cari berita relevan di koridor rute lalu snap penaltinya ke edge graf.
 
-    Kembalikan dict {edge_id: multiplier}. Kosong bila RAG nonaktif / store
-    kosong / tidak ada berita relevan / terjadi kegagalan (fallback aman).
+    Menentukan kota secara dinamis dari koordinat rute (reverse geocode) dan
+    memastikan berita kota itu tersedia via ingestion on-demand
+    (fire-and-forget). Kembalikan dict {edge_id: multiplier}. Kosong bila RAG
+    nonaktif / store kosong / tidak ada berita relevan / terjadi kegagalan
+    (fallback aman).
     """
     if not RAG_NEWS_ENABLED or not ai_agent.GEMINI_API_KEY:
         return {}
-    if _store.size() == 0:
-        return {}
     coords = list(polyline_coords or [])
     if not coords or len(coords) < 2:
+        return {}
+    try:
+        city = await _detect_city_from_coords(coords, redis)
+        await _ensure_city_news(redis, city)
+    except Exception as exc:
+        logger.warning("[RAG] Siapkan berita kota gagal: %s", exc)
+    if _store.size() == 0:
         return {}
     try:
         relevant = await _retrieve_relevant(coords)
