@@ -171,12 +171,16 @@ def remaining_progress(session: NavSession, lat: float,
 
 async def compute_reroute(app, redis, session: NavSession,
                           lat: float, lon: float,
-                          traffic: bool = True):
+                          traffic: bool = True,
+                          extra_penalties: dict[int, float] | None = None):
     """Hitung ulang rute dari posisi kini ke dest aktif.
 
     Menggunakan ulang pipeline pathfinding yang sudah ada (`_resolve_plan` +
     `_best_route`) sehingga memakai cache graf & rute. Kembalikan
     `RouteResponse` atau `None` bila gagal (area tidak tercakup / rute tak ada).
+
+    `extra_penalties` (opsional): dict {edge_id: multiplier} yang di-merge
+    (ambil max) ke penalti traffic — dipakai mis. laporan kurir (insiden jalan).
     """
     from app.api.v1.endpoints.pathfinding import (
         _best_route,
@@ -231,6 +235,10 @@ async def compute_reroute(app, redis, session: NavSession,
                         traffic_penalties.get(eid, 1.0), mult)
         except Exception as exc:
             logger.warning("[NAV] Gagal ambil penalti berita (RAG): %s", exc)
+        if extra_penalties:
+            for eid, mult in extra_penalties.items():
+                traffic_penalties[eid] = max(
+                    traffic_penalties.get(eid, 1.0), mult)
     try:
         response, _node_sequence, _final_penalties, _m = await _best_route(
             app, plan, redis, traffic_penalties, leg_payload, mode,
