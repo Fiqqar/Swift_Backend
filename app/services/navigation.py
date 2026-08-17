@@ -17,6 +17,8 @@ import math
 import os
 import time
 
+from app.services.ai_agent import AI_REROUTE_ENABLED
+
 logger = logging.getLogger("pathfinding")
 
 
@@ -228,6 +230,54 @@ async def compute_reroute(app, redis, session: NavSession,
     return response
 
 
+def advance_leg(session: NavSession, nav: dict) -> dict | None:
+    """Pindahkan navigasi ke leg berikutnya dari snapshot rute multi-leg.
+
+    Dipanggil saat kurir menyelesaikan satu pengiriman (POD) via WS
+    `complete_leg` / `pod_submitted`. Mengubah state session (polyline aktif,
+    dest, leg_index) ke leg berikutnya.
+
+    Kembalikan:
+    - `{"done": True}` bila semua leg selesai (atau rute single-leg).
+    - dict `{"leg_index", "package_id", "recipient_name", "dest", "polyline"}`
+      untuk leg baru.
+    - `None` bila snapshot tidak cocok (`route_id`) / leg tidak valid.
+    """
+    if nav.get("route_id") != session.route_id:
+        return None
+    legs = nav.get("legs") or []
+    if not legs:
+        return None
+    if session.kind != "multi":
+        return {"done": True}
+    next_index = session.leg_index + 1
+    if next_index >= len(legs):
+        return {"done": True}
+    leg = legs[next_index]
+
+    from app.services.polyline import decode_polyline
+
+    coords = decode_polyline(leg.get("encoded") or "")
+    if len(coords) < 2:
+        return None
+    dest = leg.get("dest")
+    if dest is None:
+        return None
+    session.leg_index = next_index
+    session.coords = coords
+    session.dest = (float(dest[0]), float(dest[1]))
+    session.off_route_active = False
+    session.cooldown_until = 0.0
+    session.last_progress_push = 0.0
+    return {
+        "leg_index": next_index,
+        "package_id": leg.get("package_id"),
+        "recipient_name": leg.get("recipient_name"),
+        "dest": [float(dest[0]), float(dest[1])],
+        "polyline": leg.get("encoded"),
+    }
+
+
 def _should_traffic_reroute(session: NavSession, new_eta_s: float) -> bool:
     """Reroute traffic hanya bila rute baru lebih cepat >= minimum saving."""
     remaining = remaining_progress(
@@ -282,10 +332,44 @@ async def _evaluate_session(app, session: NavSession) -> None:
     if response is None:
         return
     new_eta_s = response.estimated_time_seconds or 0.0
-    if not _should_traffic_reroute(session, new_eta_s):
-        return
     old_prog = remaining_progress(
         session, float(pos["lat"]), float(pos["lon"]))
+
+    reason = None
+    if AI_REROUTE_ENABLED:
+        from app.services.ai_agent import (
+            build_reroute_context,
+            decide_reroute,
+        )
+        decision = await decide_reroute(
+            build_reroute_context(
+                session, float(pos["lat"]), float(pos["lon"]),
+                hint="traffic",
+                extra={
+                    "candidate": {
+                        "eta_s": new_eta_s,
+                        "saving_s": round(
+                            (old_prog["remaining_time_s"] - new_eta_s)
+                            if old_prog else 0.0, 1),
+                    },
+                }),
+            "traffic",
+            app=app,
+            redis=getattr(app.state, "redis", None),
+            session=session,
+        )
+        if decision is not None:
+            if decision.get("action") != "apply":
+                logger.info(
+                    "[NAV] AI tolak reroute traffic kurir %s (%s).",
+                    session.kurir_id, decision.get("reason"))
+                return
+            reason = decision.get("reason") or "ai_decision"
+        elif not _should_traffic_reroute(session, new_eta_s):
+            return
+    elif not _should_traffic_reroute(session, new_eta_s):
+        return
+
     session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
     session.coords = list(response.route_coordinates)
     session.dest = (session.dest[0], session.dest[1])
@@ -299,6 +383,8 @@ async def _evaluate_session(app, session: NavSession) -> None:
         "eta_s": round(new_eta_s, 1),
         "applied": AUTO_REROUTE,
     }
+    if reason:
+        event["reason"] = reason
     if session.ws is not None:
         try:
             await session.ws.send_json(event)

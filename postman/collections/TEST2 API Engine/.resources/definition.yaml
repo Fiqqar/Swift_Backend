@@ -4,7 +4,7 @@ description: |-
 
   Gunakan tombol **Authorize** untuk memasukkan token dari `POST /api/v1/auth/login` agar endpoint yang membutuhkan autentikasi dapat diuji.
 variables:
-  baseUrl: /
+  baseUrl: http://localhost:8000
 auth:
   - id: 6afbca0f-c55d-4619-809e-14a8f48f5cdf
     type: bearer

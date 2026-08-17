@@ -39,6 +39,30 @@ Base URL: `http://localhost:8000` • WS URL: `ws://localhost:8000`
 
 ---
 
+## Pola Message WS (ringkasan)
+
+Runbook ini memakai **dua** WebSocket. Keduanya persisten dua arah (**bukan
+one-shot webhook**): client yang mengirim pesan, server membalas.
+
+### `WS /api/v1/ws/navigation` — request (client → server)
+
+| Message | Field | Balasan |
+|---|---|---|
+| `ping` | — | `ack` |
+| `start_navigation` | `route_id` (wajib), `leg_index` (opsional, default 0) | `ack` + polyline leg aktif; `error` bila snapshot tak cocok |
+| `location_update` | `lat` + `lng`/`lon` (wajib); `bearing`/`speed`/`current_route_id` opsional | `route_progress`; `off_route_warning` + `auto_rerouted`/`reroute_available` bila off-route |
+| `complete_leg` / `pod_submitted` | — | `ack action=complete_leg` (leg baru) / `route_complete` (leg terakhir) |
+
+> `current_route_id` di `location_update` tidak dibaca server. Detail alur & aturan
+> `leg_index`: `docs/testcase/runbook_ai_reroute_agent.md` → "Pola Message & Aturan WS".
+
+### `WS /api/v1/ws/driver/position` — request (client → server)
+
+| Message | Field | Balasan |
+|---|---|---|
+| `ping` | — | `ack` |
+| `position` | `lat` + `lon` (wajib; pakai `lon`, bukan `lng`); `bearing`/`speed` opsional | `ack` (`stored`/`snapped`); push `geofence_enter`/`geofence_exit` |
+
 ## 0. Prasyarat & Setup
 
 1. Pastikan `.env` berisi:
@@ -114,9 +138,10 @@ curl http://localhost:8000/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
 > 1. HTTP call **wajib** menyertakan header `Authorization: Bearer <token>`
 >    yang **sama** dengan token yang dipakai di WebSocket. `kurir_id` diambil
 >    dari token ini (pathfinding.py `_token_kurir_id`), **bukan** dari body.
-> 2. Payload **wajib** berisi `dynamic_rerouting: true` — tanpa ini snapshot
->    `driver:nav:{kurir_id}` **tidak dibuat** (`nav_enabled()` di
->    `pathfinding.py:121`) dan `route_id` di respons tetap `null`.
+> 2. `dynamic_rerouting: true` di payload **dianjurkan** tetapi hanya **wajib**
+>    bila `ENABLE_LIVE_NAVIGATION=0`. Dengan `ENABLE_LIVE_NAVIGATION=1` (sudah
+>    di-set di Bagian 0), snapshot `driver:nav:{kurir_id}` dibuat otomatis walau
+>    field ini dihilangkan (`nav_enabled()` di `pathfinding.py:121`).
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/pathfinding/find-optimized-delivery-route \
@@ -157,8 +182,9 @@ Harap melihat JSON berisi `route_id`, `kind:"multi"`, `mode`, `last_mile`,
 `total_distance_m`, `total_eta_s`, dan `legs[]` (masing-masing punya `index`,
 `stop_sequence_number`, `encoded`, `dest`, `eta_s`).
 
-> Bila `route_id` di respons `null` atau `driver:nav:{KURIR_ID}` kosong → payload
-> tidak menyertakan `dynamic_rerouting: true` (lihat Prasyarat Kritis).
+> Bila `route_id` di respons `null` atau `driver:nav:{KURIR_ID}` kosong → cek
+> `ENABLE_LIVE_NAVIGATION=1` (atau sertakan `dynamic_rerouting: true`) dan pastikan
+> token HTTP & WS sama (lihat Prasyarat Kritis).
 
 ## 4. Navigation WS — Start Navigation
 
@@ -248,18 +274,22 @@ docker compose exec redis redis-cli HGETALL driver:pos:{KURIR_ID}
 
 Kirim `location_update` yang sengaja **menyimpang** lebih dari
 `OFF_ROUTE_THRESHOLD_M` (default 40 m) dari polyline leg aktif, misalnya geser
-~150 m ke samping:
+`+0.0015` derajat ke samping (~150-250 m, tergantung geometri polyline):
 
 ```json
 {"type":"location_update","lat":<lat+0.0015>,"lng":<lng+0.0015>,
  "bearing":90,"speed":20,"current_route_id":<ROUTE_ID>}
 ```
 
+> `current_route_id` **tidak dibaca server**. `distance_m` dihitung sebagai jarak
+> tegak lurus titik ke polyline — tidak bisa dipatok tepat; yang penting
+> `distance_m > threshold_m`.
+
 **Kriteria lulus:** terima dua pesan:
 
 ```json
 { "type":"off_route_warning","ok":true,"route_id":<ROUTE_ID>,
-  "distance_m": 150.0, "threshold_m": 40.0, "ts":... }
+  "distance_m": <angka > 40.0>, "threshold_m": 40.0, "ts":... }
 
 { "type":"auto_rerouted","ok":true,"route_id":<ROUTE_ID>,
   "polyline":"<encoded polyline baru>","saving_s":...,
@@ -359,7 +389,7 @@ Ringkasan (detail lengkap: `docs/testcase/runbook_ws_realtime_route.md` Bagian 8
 | `WS navigation` ditutup kode `1008` | `ENABLE_LIVE_NAVIGATION` = 0. Set `1` di `.env`, restart app. |
 | `WS driver/position` ditutup kode `1008` | `ENABLE_LIVE_TRACKING` = 0. Set `1` di `.env`, restart app. |
 | Keduanya ditutup kode `4401` | Token invalid/tidak ada. Login ulang, pastikan `?token=...` benar. |
-| `route_id` di respons `find-optimized-delivery-route` = `null` | Payload tidak berisi `dynamic_rerouting: true` → snapshot tidak dibuat. |
+| `route_id` di respons `find-optimized-delivery-route` = `null` | Snapshot tidak dibuat: cek `ENABLE_LIVE_NAVIGATION=1` (atau sertakan `dynamic_rerouting: true`), token HTTP & WS harus sama. |
 | `start_navigation` → `error "Route snapshot tidak ditemukan / tidak cocok"` | Snapshot `driver:nav:{kurir_id}` belum ada (TTL `KURIR_NAV_TTL_SECONDS` habis) atau `route_id` salah. Hitung ulang rute, pastikan token sama. |
 | `start_navigation` → `error "Polyline leg tidak valid"` | Snapshot `legs[leg_index]` tidak punya `encoded`/`dest` valid (data korup). |
 | `ack` berisi `"stored": false` / posisi tidak tersimpan | Redis tidak terhubung (`redis_connected: false`). Jalankan app di docker network (`REDIS_HOST=redis`). |

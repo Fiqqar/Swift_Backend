@@ -1,12 +1,12 @@
 $kind: http-request
 description: |-
-  Cek apakah posisi kurir (`current`) berada dalam radius geofencing terhadap target stop (`target`) menggunakan jarak haversine.
+  Cek geofence posisi terhadap target stop.
 
-  - **Wajib:** `current`, `target` (Coordinate).
-  - **Opsional:** `radius_m` (default 30 m).
+  - **Wajib:** `current`, `target`.
+  - **Opsional:** `radius_m`.
 
-  Khusus fallback/verifikasi manual — untuk deteksi real-time gunakan WebSocket `WS /api/v1/ws/driver/position`.
-url: "{{baseUrl}}/api/v1/pathfinding/geofence-check"
+  Untuk deteksi real-time gunakan WebSocket `WS /api/v1/ws/driver/position`.
+url: '{{baseUrl}}/api/v1/pathfinding/geofence-check'
 method: POST
 headers:
   Content-Type: application/json
@@ -16,12 +16,12 @@ body:
   content: |-
     {
       "current": {
-        "latitude": -31.236852682790712,
-        "longitude": 17.239692422702092
+        "latitude": -6.8048,
+        "longitude": 110.8385
       },
       "target": {
-        "latitude": 55.790800849874984,
-        "longitude": -7.889533176901239
+        "latitude": -6.81,
+        "longitude": 110.85
       },
       "radius_m": 30
     }

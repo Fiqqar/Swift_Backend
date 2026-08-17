@@ -1,12 +1,12 @@
 $kind: http-request
 description: |-
-  Menghitung rute optimal (distance + ETA) dari `origin` ke `destination`.
+  Menghitung rute terbaik antara dua titik.
 
-  - **Wajib:** `origin`, `destination` (Coordinate).
-  - **Opsional:** `mode` (motorcycle/car/truck), `last_mile_precision`, `dynamic_rerouting`.
+  - **Wajib:** `origin`, `destination`.
+  - **Opsional:** `mode`, `last_mile_precision`.
 
-  Error: `400` di luar jangkauan peta, `404` rute tidak ditemukan, `500` gagal memuat peta.
-url: "{{baseUrl}}/api/v1/pathfinding/find-route"
+  Error `400` di luar jangkauan peta, `404` rute tidak ditemukan, `500` gagal memuat peta.
+url: '{{baseUrl}}/api/v1/pathfinding/find-route'
 method: POST
 headers:
   Content-Type: application/json
@@ -16,16 +16,15 @@ body:
   content: |-
     {
       "origin": {
-        "latitude": -40.30287583682011,
-        "longitude": -141.16844062209313
+        "latitude": -6.8048,
+        "longitude": 110.8385
       },
       "destination": {
-        "latitude": 53.23959444060915,
-        "longitude": 11.656593606103058
+        "latitude": -6.81,
+        "longitude": 110.85
       },
-      "mode": "car",
-      "last_mile_precision": null,
-      "dynamic_rerouting": null
+      "mode": "motorcycle",
+      "last_mile_precision": true
     }
 settings: {}
 examples: ./.resources/Hitung rute terbaik antara dua titik.resources/examples

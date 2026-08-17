@@ -1,36 +1,34 @@
 $kind: http-request
 description: |-
-  Mengunggah foto POD ke Cloudinary lalu otomatis membuat riwayat event `pod_submitted` dalam satu panggilan (upload server-side).
+  Upload foto POD (multipart).
 
   - **Path wajib:** `shipment_id`.
-  - **Form wajib:** `file` (image: jpeg/png/webp/heic/heif/gif, maks 10 MB).
+  - **Form wajib:** `file`.
   - **Form opsional:** `recipient_name`, `latitude`, `longitude`, `keterangan`.
-  - Error `415` tipe tidak didukung, `400` file kosong/terlalu besar, `503` Cloudinary belum dikonfigurasi, `502` upload gagal.
-url: "{{baseUrl}}/api/v1/shipments/:shipment_id/history/photo"
+url: '{{baseUrl}}/api/v1/shipments/:shipment_id/history/photo'
 method: POST
 headers:
-  Content-Type: multipart/form-data
   Accept: application/json
 pathVariables:
-  shipment_id: "431"
+  shipment_id: '1'
 body:
   type: formdata
   content:
-    - type: text
-      key: file
-      value: string
-    - type: text
-      key: recipient_name
-      value: string
-    - type: text
-      key: latitude
-      value: "9374.089794413834"
-    - type: text
-      key: longitude
-      value: "2846.283896086802"
-    - type: text
-      key: keterangan
-      value: string
+    - key: file
+      type: file
+      src: ''
+    - key: recipient_name
+      type: text
+      value: Budi
+    - key: latitude
+      type: text
+      value: '-6.81'
+    - key: longitude
+      type: text
+      value: '110.85'
+    - key: keterangan
+      type: text
+      value: Paket diterima
 settings: {}
 examples: ./.resources/Upload foto POD (multipart).resources/examples
 order: 1000

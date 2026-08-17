@@ -1,23 +1,21 @@
 $kind: http-request
 description: |-
-  Mengubah status batch dan meng-cascade ke semua shipment di dalamnya (menulis TrackingHistory).
+  Update status batch.
 
   - **Path wajib:** `batch_id`.
-  - **Body wajib:** `status` (`picked_up`/`delivered`/`returned`).
-  - Transisi: `assigned → picked_up → delivered`, atau `returned` dari `assigned`/`picked_up`.
-  - Error `404` batch tidak ditemukan, `409` transisi tidak valid.
-url: "{{baseUrl}}/api/v1/batches/:batch_id/status"
+  - **Body wajib:** `status`.
+url: '{{baseUrl}}/api/v1/batches/:batch_id/status'
 method: PATCH
 headers:
   Content-Type: application/json
   Accept: application/json
 pathVariables:
-  batch_id: "2605"
+  batch_id: '1'
 body:
   type: json
   content: |-
     {
-      "status": "returned"
+      "status": "picked_up"
     }
 settings: {}
 examples: ./.resources/Update status batch.resources/examples

@@ -1,0 +1,20 @@
+$kind: websocket-request
+description: |-
+  WebSocket real-time navigation dan auto-rerouting untuk kurir.
+
+  - Handshake auth: query param `token={{bearerToken}}` atau header `Authorization: Bearer {{bearerToken}}`.
+  - Guard: `ENABLE_LIVE_NAVIGATION` (bila False, koneksi ditolak kode 1008).
+  - Satu koneksi per kurir.
+
+  Pesan masuk:
+  - `{"type":"start_navigation","route_id":"route-123","leg_index":0}` untuk mengaktifkan snapshot rute dari Redis `driver:nav:{kurir_id}`.
+  - `{"type":"location_update","lat":-6.8048,"lng":110.8385,"bearing":90,"speed":10,"current_route_id":"route-123"}` untuk update posisi, progress, off-route, dan auto-reroute.
+  - `{"type":"ping"}` untuk menerima `ack`.
+
+  Pesan keluar: `ack`, `error`, `route_progress`, `off_route_warning`, `reroute_available`, `auto_rerouted`.
+url: 'ws://localhost:8000/api/v1/ws/navigation?token={{bearerToken}}'
+headers:
+  - key: Authorization
+    value: 'Bearer {{bearerToken}}'
+settings: {}
+order: 2000

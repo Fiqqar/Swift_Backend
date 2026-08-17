@@ -109,3 +109,98 @@ def test_route_id_preserved_in_python_dump():
 def test_encode_polyline_compact_for_nav_payload():
     encoded = encode_polyline(ROUTE, 5)
     assert len(encoded) < 200
+
+
+# --- advance_leg (multi-leg POD advance) ---
+
+def _multi_nav(route_id=1):
+    from app.services.polyline import decode_polyline
+
+    ROUTE2 = [(-6.8100, 110.8500), (-6.8150, 110.8550), (-6.8200, 110.8600)]
+    return {
+        "route_id": route_id,
+        "kind": "multi",
+        "legs": [
+            {
+                "index": 0,
+                "package_id": 1,
+                "recipient_name": "Budi",
+                "encoded": encode_polyline(ROUTE, 5),
+                "dest": ROUTE[-1],
+            },
+            {
+                "index": 1,
+                "package_id": 2,
+                "recipient_name": "Siti",
+                "encoded": encode_polyline(ROUTE2, 5),
+                "dest": ROUTE2[-1],
+            },
+        ],
+    }
+
+
+def test_advance_leg_moves_to_next_leg():
+    from app.services.navigation import advance_leg
+    from app.services.polyline import decode_polyline
+
+    nav = _multi_nav()
+    session = NavSession(kurir_id=1)
+    session.route_id = 1
+    session.kind = "multi"
+    session.leg_index = 0
+    session.coords = decode_polyline(nav["legs"][0]["encoded"])
+    session.dest = nav["legs"][0]["dest"]
+
+    result = advance_leg(session, nav)
+    assert result is not None
+    assert result["leg_index"] == 1
+    assert result["package_id"] == 2
+    assert session.leg_index == 1
+    assert session.dest == tuple(nav["legs"][1]["dest"])
+    assert session.coords == decode_polyline(nav["legs"][1]["encoded"])
+    assert session.off_route_active is False
+    assert session.cooldown_until == 0.0
+
+
+def test_advance_leg_last_leg_returns_done():
+    from app.services.navigation import advance_leg
+
+    nav = _multi_nav()
+    session = NavSession(kurir_id=1)
+    session.route_id = 1
+    session.kind = "multi"
+    session.leg_index = 1
+    result = advance_leg(session, nav)
+    assert result == {"done": True}
+
+
+def test_advance_leg_single_kind_returns_done():
+    from app.services.navigation import advance_leg
+
+    nav = _multi_nav()
+    nav["kind"] = "single"
+    session = NavSession(kurir_id=1)
+    session.route_id = 1
+    session.kind = "single"
+    session.leg_index = 0
+    result = advance_leg(session, nav)
+    assert result == {"done": True}
+
+
+def test_advance_leg_route_id_mismatch_returns_none():
+    from app.services.navigation import advance_leg
+
+    session = NavSession(kurir_id=1)
+    session.route_id = 999
+    session.kind = "multi"
+    assert advance_leg(session, _multi_nav(route_id=1)) is None
+
+
+def test_advance_leg_no_legs_returns_none():
+    from app.services.navigation import advance_leg
+
+    session = NavSession(kurir_id=1)
+    session.route_id = 1
+    session.kind = "multi"
+    assert advance_leg(session, {"route_id": 1, "kind": "multi",
+                                 "legs": []}) is None

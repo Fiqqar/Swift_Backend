@@ -1,5 +1,11 @@
 $kind: websocket-request
+name: Navigation
 description: ""
-url: ""
+url: "{{baseUrl}}/api/v1/ws/navigation?token={{bearerToken}}"
+headers:
+  Authorization: Bearer {{bearerToken}}
+queryParams:
+  token: "{{bearerToken}}"
 settings: {}
+messages: .resources/Navigation.resources/messages
 order: 2000

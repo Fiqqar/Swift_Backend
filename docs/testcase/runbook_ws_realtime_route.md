@@ -23,6 +23,21 @@ Base URL: `http://localhost:8000` • WS URL: `ws://localhost:8000`
 
 ---
 
+## Pola Message WS (ringkasan)
+
+`WS /api/v1/ws/driver/position` adalah koneksi persisten dua arah (**bukan
+one-shot webhook**): client yang mengirim pesan, server membalas.
+
+| Message (client → server) | Field | Balasan |
+|---|---|---|
+| `ping` | — | `ack` `{"type":"ack","ok":true,"ts":...}` |
+| `position` | `lat` + `lon` (wajib; pakai `lon`, bukan `lng`), `bearing`/`speed` (opsional) | `ack` dengan `stored`/`warning`/`snapped`; push `geofence_enter`/`geofence_exit` |
+
+> - Pesan `position` berikutnya **diabaikan** bila dikirim <
+>   `KURIR_POS_MAX_RATE_SECONDS` (default 3 dtk) dari update sebelumnya.
+> - `position` dengan `lat`/`lon` tidak valid / tidak ada → `error`.
+> - `type` tak dikenal → diabaikan senyap; JSON tidak valid → `error`.
+
 ## 0. Prasyarat & Setup
 
 1. Pastikan `.env` berisi:

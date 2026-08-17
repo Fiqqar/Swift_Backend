@@ -1,4 +1,4 @@
 $kind: websocket-message
 content: '{"type":"position","lat":-6.778981 ,"lon":110.865041,"bearing":90,"speed":20}'
-contentType: text
+contentType: json
 order: 1000

@@ -1,18 +1,16 @@
 $kind: http-request
 description: |-
-  Mengubah status satu shipment dan menulis TrackingHistory. Saat `delivered`, COD otomatis menjadi `collected`, dan cache tracking kurir (stops/geofence) di-invalidasi.
+  Update status shipment.
 
   - **Path wajib:** `shipment_id`.
-  - **Body wajib:** `status` (`picked_up`/`delivered`/`failed`/`returned`).
-  - Transisi: `assigned → picked_up → delivered`, `failed` dari `picked_up`, `returned` dari `assigned`/`picked_up`.
-  - Error `404` tidak ditemukan, `409` transisi tidak valid.
-url: "{{baseUrl}}/api/v1/shipments/:shipment_id/status"
+  - **Body wajib:** `status`.
+url: '{{baseUrl}}/api/v1/shipments/:shipment_id/status'
 method: PATCH
 headers:
   Content-Type: application/json
   Accept: application/json
 pathVariables:
-  shipment_id: "431"
+  shipment_id: '1'
 body:
   type: json
   content: |-

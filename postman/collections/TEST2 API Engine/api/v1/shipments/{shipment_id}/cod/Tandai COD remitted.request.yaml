@@ -1,22 +1,21 @@
 $kind: http-request
 description: |-
-  Menandai COD shipment sebagai `remitted` (dana sudah disetor). Membutuhkan status COD `collected` sebelumnya (otomatis saat shipment delivered).
+  Tandai COD remitted.
 
   - **Path wajib:** `shipment_id`.
   - **Body wajib:** `status` = `remitted`.
-  - Error `404` tidak ditemukan, `409` bila COD belum collected.
-url: "{{baseUrl}}/api/v1/shipments/:shipment_id/cod"
+url: '{{baseUrl}}/api/v1/shipments/:shipment_id/cod'
 method: PATCH
 headers:
   Content-Type: application/json
   Accept: application/json
 pathVariables:
-  shipment_id: "431"
+  shipment_id: '1'
 body:
   type: json
   content: |-
     {
-      "status": "string"
+      "status": "remitted"
     }
 settings: {}
 examples: ./.resources/Tandai COD remitted.resources/examples

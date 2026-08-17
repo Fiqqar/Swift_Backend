@@ -1,0 +1,16 @@
+$kind: http-request
+description: |-
+  Menampilkan status konfigurasi WebSocket real-time navigation `WS /api/v1/ws/navigation`.
+
+  - `enabled`: apakah `ENABLE_LIVE_NAVIGATION` aktif (bila False, koneksi WS ditolak kode 1008).
+  - `redis_connected`: apakah Redis terhubung.
+  - `off_route_threshold_m`: ambang off-route.
+  - `reroute_cooldown_s`: cooldown auto-reroute.
+  - `auto_reroute`: apakah rute baru langsung diterapkan.
+  - `max_rate_seconds`: batas interval pengiriman posisi.
+url: '{{baseUrl}}/api/v1/ws/navigation/status'
+method: GET
+headers:
+  Accept: application/json
+settings: {}
+order: 1000
