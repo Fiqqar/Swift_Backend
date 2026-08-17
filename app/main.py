@@ -246,6 +246,12 @@ async def lifespan(app: FastAPI):
         nav_task = asyncio.create_task(navigation_worker(app))
         app.state.nav_task = nav_task
 
+    rag_task = None
+    if os.environ.get("RAG_NEWS_ENABLED", "0") == "1":
+        from app.services.rag_traffic import rag_ingestion_worker
+        rag_task = asyncio.create_task(rag_ingestion_worker(app, redis_client))
+        app.state.rag_task = rag_task
+
     try:
         yield
     finally:
@@ -263,6 +269,8 @@ async def lifespan(app: FastAPI):
             traffic_task.cancel()
         if nav_task is not None:
             nav_task.cancel()
+        if rag_task is not None:
+            rag_task.cancel()
         await close_redis(redis_client)
         try:
             await dispose_db()
