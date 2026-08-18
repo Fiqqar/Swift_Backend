@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cek Sistem - TEST2 Multi-Stop Delivery</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230f6dc1'/%3E%3Ccircle cx='8' cy='8' r='3.4' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="delivery.css">
@@ -31,20 +32,47 @@
   <div id="toasts"></div>
   <div id="panel">
     <section>
-      <h2>1. Titik Hub</h2>
+      <h2>Kurir / Autentikasi</h2>
+      <div class="login-form">
+        <div class="login-fields">
+          <input type="text" id="inp-username" placeholder="username" autocomplete="username">
+          <input type="password" id="inp-password" placeholder="password" autocomplete="current-password">
+        </div>
+        <div class="login-actions">
+          <button class="btn primary" id="btn-login">Login</button>
+          <button class="btn ghost" id="btn-logout" style="display:none;">Logout</button>
+        </div>
+      </div>
+      <div class="coords" id="login-status">Belum login. Titik awal fallback: courier_position / hub.</div>
+    </section>
+
+    <section>
+      <h2>1. Titik Awal (Hub / Posisi Kurir)</h2>
       <div class="mode-row">
         <label><input type="radio" name="mode" value="hub" checked><span>Klik = Hub</span></label>
         <label><input type="radio" name="mode" value="deviate"><span>Klik = Deviasi Kurir</span></label>
       </div>
       <div class="row"><span>Hub origin</span><b id="txt-hub">-</b></div>
       <div class="row"><span>Posisi kurir saat ini</span><b id="txt-pos">-</b></div>
-      <div class="coords" id="hub-hint">Klik peta untuk menetapkan Hub (drop point).</div>
+      <button class="btn green" id="btn-geo">Gunakan Lokasi Saya (Posisi Kurir)</button>
+      <label class="toggle-row">
+        <span class="toggle-switch"><input type="checkbox" id="chk-stream"><span class="slider"></span></span>
+        <span>Stream posisi ke WS (webhook-first)</span>
+      </label>
+      <div class="coords" id="ws-status">WS posisi: nonaktif</div>
+      <div class="row"><span>Sumber titik awal</span><b id="txt-start-source">-</b></div>
+      <div class="coords" id="hub-hint">Klik peta untuk menetapkan Hub (drop point), atau gunakan lokasi Anda sebagai posisi kurir.</div>
     </section>
 
     <section>
       <h2>2. Alamat Penerima</h2>
       <textarea id="txt-deliveries" rows="7"
-        placeholder="Satu alamat per baris. Opsional format:&#10;alamat | EXPRESS&#10;alamat | REGULAR&#10;alamat&#10;Contoh:&#10;Jalan Sukun Raya No.09, Kudus | EXPRESS&#10;Jl. Bae-Besito, Gebog, Kudus"></textarea>
+        placeholder="Satu tujuan per baris. Opsional format:&#10;alamat | EXPRESS | lat,lon&#10;lat,lon | EXPRESS&#10;alamat | REGULAR&#10;lat,lon&#10;Contoh:&#10;Jalan Sukun Raya No.09, Kudus | EXPRESS | -6.8048,110.8405&#10;-6.8048,110.8405&#10;Jl. Bae-Besito, Gebog, Kudus"></textarea>
+      <div class="mode-row vehicle">
+        <label><input type="radio" name="vehicle" value="motorcycle" checked><span>Motorcycle</span></label>
+        <label><input type="radio" name="vehicle" value="car"><span>Car</span></label>
+        <label><input type="radio" name="vehicle" value="truck"><span>Truck</span></label>
+      </div>
       <label class="toggle-row">
         <span class="toggle-switch"><input type="checkbox" id="chk-skip-traffic"><span class="slider"></span></span>
         <span>Skip traffic (leg antar-stop cepat)</span>

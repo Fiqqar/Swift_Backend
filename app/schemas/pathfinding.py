@@ -137,12 +137,13 @@ class OptimizedDeliveryRouteRequest(BaseModel):
     hub_origin: Coordinate | None = Field(
         default=None,
         description="Opsional. Titik awal rute = lokasi Hub. Dipakai sebagai "
-                    "FALLBACK TERAKHIR bila `courier_position` dan posisi Redis "
-                    "kurir tidak tersedia (perilaku eksisting).")
+                    "FALLBACK TERAKHIR bila posisi Redis `driver:pos:{kurir_id}` "
+                    "dan `courier_position` tidak tersedia (perilaku eksisting).")
     courier_position: Coordinate | None = Field(
         default=None,
-        description="Opsional. Posisi kurir saat ini — PRIORITAS TERTINGGI sebagai "
-                    "titik awal rute. Menggantikan `hub_origin` bila diberikan.")
+        description="Opsional. Posisi kurir saat ini — PRIORITAS KEDUA sebagai "
+                    "titik awal rute (dipakai hanya bila posisi Redis webhook "
+                    "tidak tersedia). Menggantikan `hub_origin` bila diberikan.")
     deliveries: List[DeliveryStop] = Field(
         min_length=1,
         description="Wajib. Daftar stop pengantaran (minimal 1).")
@@ -230,6 +231,11 @@ class OptimizedDeliveryRouteResponse(BaseModel):
     route_id: int | None = Field(
         default=None,
         description="ID snapshot rute aktif (untuk real-time navigation).")
+    start_source: str | None = Field(
+        default=None,
+        description="Sumber titik awal rute yang terpakai: `webhook` (posisi "
+                    "kurir dari Redis `driver:pos:{kurir_id}`), "
+                    "`courier_position` (payload), atau `hub_origin`.")
 
 
 class GeofenceCheckRequest(BaseModel):

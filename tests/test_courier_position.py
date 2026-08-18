@@ -149,14 +149,14 @@ def test_geofence_event_rounds_distance():
     assert ev["distance_m"] == 22.46
 
 
-def test_resolve_start_point_priority_courier():
-    start = resolve_start_point((-6.2, 106.8), (-6.3, 106.9), (-6.7, 110.8))
-    assert start == (-6.2, 106.8)
-
-
 def test_resolve_start_point_priority_redis():
-    start = resolve_start_point(None, (-6.3, 106.9), (-6.7, 110.8))
+    start = resolve_start_point((-6.2, 106.8), (-6.3, 106.9), (-6.7, 110.8))
     assert start == (-6.3, 106.9)
+
+
+def test_resolve_start_point_courier_when_redis_empty():
+    start = resolve_start_point((-6.2, 106.8), None, (-6.7, 110.8))
+    assert start == (-6.2, 106.8)
 
 
 def test_resolve_start_point_fallback_hub():

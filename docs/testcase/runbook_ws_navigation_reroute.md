@@ -17,8 +17,8 @@ Alur yang diuji:
 
    | Prioritas | Sumber | Kondisi |
    |---|---|---|
-   | 1 | `courier_position` (payload) | diberikan eksplisit |
-   | 2 | `HGETALL driver:pos:{kurir_id}` | posisi terbaru dari WebSocket belum kedaluwarsa (TTL `KURIR_POS_TTL_SECONDS`) |
+   | 1 | `HGETALL driver:pos:{kurir_id}` | posisi terbaru dari WebSocket belum kedaluwarsa (TTL `KURIR_POS_TTL_SECONDS`) |
+   | 2 | `courier_position` (payload) | diberikan eksplisit (dipakai bila posisi Redis kosong) |
    | 3 | `hub_origin` (payload) | fallback terakhir |
 
 2. **Snapshot rute aktif** (`driver:nav:{kurir_id}`, TTL `KURIR_NAV_TTL_SECONDS`)
@@ -32,7 +32,7 @@ Alur yang diuji:
 
 4. **Sinergi lintas-WS**: `location_update` pada WS navigation **juga menulis**
    `driver:pos:{kurir_id}` (`app/api/v1/endpoints/navigation.py:164`) sehingga satu
-   koneksi navigation sudah memenuhi prioritas-2 fallback chain — WS tracking
+   koneksi navigation sudah memenuhi prioritas-1 fallback chain — WS tracking
    tidak wajib dibuka.
 
 Base URL: `http://localhost:8000` • WS URL: `ws://localhost:8000`

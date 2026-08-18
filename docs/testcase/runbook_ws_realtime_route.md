@@ -7,7 +7,7 @@ WS /api/v1/ws/driver/position (token JWT)  →  Redis driver:pos:{kurir_id}
 POST /api/v1/pathfinding/find-optimized-delivery-route
    + header Authorization: Bearer <token>
    + TANPA courier_position & TANPA hub_origin
-   → titik awal rute diambil dari posisi realtime di Redis (prioritas 2)
+   → titik awal rute diambil dari posisi realtime di Redis (prioritas 1)
 ```
 
 Target yang diuji (fallback chain di `_resolve_delivery_start`,
@@ -15,8 +15,8 @@ Target yang diuji (fallback chain di `_resolve_delivery_start`,
 
 | Prioritas | Sumber | Kondisi |
 |---|---|---|
-| 1 | `courier_position` (payload) | diberikan eksplisit |
-| 2 | `HGETALL driver:pos:{kurir_id}` | posisi terbaru dari WebSocket belum kedaluwarsa (TTL `KURIR_POS_TTL_SECONDS`) |
+| 1 | `HGETALL driver:pos:{kurir_id}` | posisi terbaru dari WebSocket belum kedaluwarsa (TTL `KURIR_POS_TTL_SECONDS`) |
+| 2 | `courier_position` (payload) | diberikan eksplisit (dipakai bila posisi Redis kosong) |
 | 3 | `hub_origin` (payload) | fallback terakhir |
 
 Base URL: `http://localhost:8000` • WS URL: `ws://localhost:8000`

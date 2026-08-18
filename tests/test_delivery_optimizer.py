@@ -14,6 +14,7 @@ from app.services.pathfinding.delivery_optimizer import (
     ensure_express_first,
     haversine_matrix,
     optimize_stop_order,
+    optimize_stop_order_hybrid,
 )
 
 
@@ -84,6 +85,125 @@ def test_return_to_hub_keeps_order():
     # untuk 2 stop dekat hub, keduanya berurutan sama saja
     assert sorted(order_close) == [0, 1]
     assert sorted(order_open) == [0, 1]
+
+
+def test_hybrid_visits_all_stops():
+    async def run():
+        hub = (-6.9, 110.0)
+        deliveries = _line(5, start_lon=110.001)
+
+        async def fake_cost(o, d):
+            return 1000.0
+
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, road_cost_fn=fake_cost)
+        assert sorted(order) == [0, 1, 2, 3, 4]
+
+    asyncio.run(run())
+
+
+def test_hybrid_uses_road_distance_over_haversine():
+    async def run():
+        hub = (-6.9, 110.0)
+        # haversine bilang stop 1 (0.0001) lebih dekat, tapi jarak jalan nyata
+        # bilang stop 0 jauh lebih efisien -> greedy harus memilih stop 0 dulu.
+        deliveries = [(-6.9, 110.001), (-6.9, 110.0001)]
+
+        async def fake_cost(o, d):
+            return 100.0 if d == deliveries[0] else 10000.0
+
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, road_cost_fn=fake_cost)
+        assert order == [0, 1], order
+
+    asyncio.run(run())
+
+
+def test_hybrid_express_priority_pulls_express_first():
+    async def run():
+        hub = (-6.9, 110.0)
+        # stop 1 REGULAR lebih dekat secara haversine, tapi stop 0 EXPRESS
+        # di-diskon cost sehingga lebih efisien -> EXPRESS diantar lebih dulu.
+        deliveries = [(-6.9, 110.0008), (-6.9, 110.0004)]
+        service = ["EXPRESS", "REGULAR"]
+
+        async def fake_cost(o, d):
+            return 2000.0 if d == deliveries[0] else 1900.0
+
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, service_types=service,
+            road_cost_fn=fake_cost, express_discount=0.6)
+        assert order[0] == 0, order
+        assert order[1] == 1
+
+    asyncio.run(run())
+
+
+def test_hybrid_without_discount_stays_by_distance():
+    async def run():
+        hub = (-6.9, 110.0)
+        deliveries = [(-6.9, 110.0008), (-6.9, 110.0004)]
+        service = ["EXPRESS", "REGULAR"]
+
+        async def fake_cost(o, d):
+            return 2000.0 if d == deliveries[0] else 1900.0
+
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, service_types=service,
+            road_cost_fn=fake_cost, express_discount=1.0)
+        assert order == [1, 0], order
+
+    asyncio.run(run())
+
+
+def test_hybrid_top_k_one_is_haversine_greedy():
+    async def run():
+        hub = (-6.9, 110.0)
+        deliveries = [(-6.9, 110.001), (-6.9, 110.0005)]
+
+        async def fake_cost(o, d):
+            return 999999.0
+
+        # top_k=1 -> hanya kandidat terdekat haversine yang dievaluasi,
+        # sehingga urutan murni greedy haversine.
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, road_cost_fn=fake_cost, top_k=1)
+        assert order == [1, 0], order
+
+    asyncio.run(run())
+
+
+def test_hybrid_sync_road_cost_fn():
+    async def run():
+        hub = (-6.9, 110.0)
+        deliveries = [(-6.9, 110.001), (-6.9, 110.0001)]
+
+        def sync_cost(o, d):
+            return 100.0 if d == deliveries[0] else 10000.0
+
+        order = await optimize_stop_order_hybrid(
+            hub, deliveries, road_cost_fn=sync_cost)
+        assert order == [0, 1], order
+
+    asyncio.run(run())
+
+
+def test_hybrid_no_road_fn_falls_back_haversine():
+    async def run():
+        hub = (-6.9, 110.0)
+        deliveries = [(-6.9, 109.995), (-6.9, 110.001)]
+        order = await optimize_stop_order_hybrid(hub, deliveries, top_k=3)
+        assert order == [1, 0], order
+
+    asyncio.run(run())
+
+
+def test_hybrid_empty_deliveries():
+    async def run():
+        order = await optimize_stop_order_hybrid((-6.9, 110.0), [])
+        assert order == []
+
+    asyncio.run(run())
 
 
 async def _fake_redis():

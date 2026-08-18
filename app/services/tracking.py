@@ -225,15 +225,15 @@ def geofence_event(prev_state: str | None, inside: bool, package_id: int,
 def resolve_start_point(courier_position, redis_position, hub_origin):
     """Hirarki fallback titik awal rute (Bagian 6.1 design doc).
 
-    1. `courier_position` (prioritas 1) -> tuple (lat, lon).
-    2. `redis_position` (prioritas 2)    -> tuple (lat, lon).
-    3. `hub_origin` (fallback terakhir)  -> tuple (lat, lon).
+    1. `redis_position` (prioritas 1)  -> tuple (lat, lon)  # posisi webhook.
+    2. `courier_position` (prioritas 2) -> tuple (lat, lon).
+    3. `hub_origin` (fallback terakhir) -> tuple (lat, lon).
     Bila semua None, kembalikan None.
     """
-    if courier_position is not None:
-        return tuple(courier_position)
     if redis_position is not None:
         return tuple(redis_position)
+    if courier_position is not None:
+        return tuple(courier_position)
     if hub_origin is not None:
         return tuple(hub_origin)
     return None

@@ -7,3 +7,10 @@
 .nav-card { font-size: 13px; color: #1f2933; background: #fff; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
 .nav-card b { display: block; margin-bottom: 2px; }
 .sheet-card.done { opacity: .65; }
+.login-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.login-fields { display: flex; gap: 6px; }
+.login-fields input { flex: 1; min-width: 0; border: 1.5px solid #c9d2da; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+.login-fields input:focus { outline: none; border-color: #0f6dc1; }
+.login-actions { display: flex; gap: 6px; }
+.login-actions .btn { flex: 1; white-space: nowrap; }
+#ws-status { margin-top: 6px; }

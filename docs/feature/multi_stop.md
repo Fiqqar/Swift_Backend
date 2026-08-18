@@ -6,13 +6,23 @@ Aplikasi membutuhkan fitur pengantaran paket multi-stop dari satu Drop Point/Hub
 
 ## Requirements
 
-### 1. Route Optimization & TSP Engine (`POST /find_optimized_delivery_route`)
+### 1. Route Optimization & Multi-Stop Solver (`POST /find_optimized_delivery_route`)
 
-- Terima payload JSON berisi `hub_origin` dan array `deliveries`.
-- Hitung Distance Matrix ($N \times N$) antar semua koordinat titik (Hub + Alamat Penerima).
-- Terapkan algoritma **TSP / Vehicle Routing Problem (VRP)** untuk menentukan urutan pengantaran (_stop sequence_) paling efisien:
-  - **Priority Cost Penalty:** Jika `service_type == 'EXPRESS'`, kurangi cost jarak pada matriks atau prioritaskan titik tersebut di urutan teratas sebelum paket `REGULAR`.
-- Kembalikan response berupa rute terurut (`optimized_legs`) beserta urutan `stop_order` (misal: Stop 1, Stop 2, Stop 3).
+- Terima payload JSON berisi `hub_origin`/`courier_position` dan array `deliveries`.
+- Titik awal rute = posisi kurir webhook (Redis `driver:pos:{kurir_id}`) → `courier_position` → `hub_origin`.
+- Urutkan stop memakai **hybrid greedy** (`optimize_stop_order_hybrid`): dari posisi
+  saat ini ambil top-K kandidat terdekat (haversine, env `DELIVERY_ORDER_TOP_K`,
+  default 3), hitung **jarak jalan nyata** untuk kandidat itu (cache Redis `route:*`),
+  pilih yang paling efisien, lalu ulangi dari stop terpilih sampai stop terakhir —
+  perilaku kurir "dari lokasi sekarang selalu cari yang terdekat/efisien".
+  **Prioritas EXPRESS:** cost menuju paket EXPRESS dikali diskon (`0.6`) sehingga
+  cenderung diantar lebih dulu.
+- Kembalikan response berupa rute terurut (`optimized_legs`) beserta urutan
+  `stop_order` (misal: Stop 1, Stop 2, Stop 3).
+- **Koordinat langsung:** tiap `deliveries[].latitude`/`longitude` opsional —
+  bila diberikan dipakai langsung (tanpa geocode); bila kosong, `alamat`
+  di-geocode (Nominatim). UI demo `/delivery.html` menerima format baris
+  `alamat | EXPRESS | lat,lon` atau `lat,lon`.
 
 ### 2. Multi-Leg Navigation Payload Response
 
