@@ -44,3 +44,34 @@ Setiap objek leg dalam response harus memuat:
 - **Overview Mode:** Render seluruh rute dari Hub ke semua penerima dengan marker bernomor ($1, 2, 3$). Tandai paket `EXPRESS` dengan warna marker beda (misal: Merah/Kuning).
 - **Active Navigation Mode:** Sediakan switcher/step-by-step mode. Highlight segmen menuju paket aktif dengan warna biru tebal, dan segmen berikutnya dengan warna abu-abu.
 - Sediakan tombol "Konfirmasi Terkirim / Package Delivered" yang akan secara otomatis menggeser active index ke `stop_sequence` berikutnya dan mengkalkulasi ulang sisa rute jika terjadi deviasi lokasi kurir.
+
+## Performa & Pre-warm
+
+Response `/find-optimized-delivery-route` punya 3 fase; pada request pertama
+(cache dingin) ketiganya bertumpuk sehingga bisa lambat (mis. ~25s untuk 3 paket):
+
+1. **Geocode** (hanya bila stop tanpa `latitude`/`longitude`): Nominatim, seri,
+   `GEOCODE_RATE_DELAY` default 1s per alamat → kirim koordinat inline agar dilewati.
+2. **Ordering hybrid** (`optimize_stop_order_hybrid`): `top_k=3` → 6× `_ordering_road_distance`
+   (3+2+1), tiap call = A* penuh; cache Redis `route:*` (TTL 300s) membuat request
+   berikutnya instan.
+3. **Leg per stop** (paralel, concurrency `DELIVERY_LEG_CONCURRENCY` default 5):
+   bila `skip_traffic=false` dan traffic aktif, tiap leg melakukan probe TomTom
+   O/D + corridor (s.d. `TOMTOM_CORRIDOR_MAX_SAMPLES`) dengan timeout per-call
+   `TOMTOM_TIMEOUT` (default 8s) — ini sumber lambat terbesar.
+
+Rekomendasi agar respons cepat:
+
+- Set **`skip_traffic: true`** di payload (UI demo `/delivery.html` default aktif
+  via toggle "Skip traffic"). Endpoint `_best_route` melewati semua probe TomTom
+  (A* murni) — hemat puluhan detik di cache dingin.
+- Kirim **`latitude`/`longitude` inline** tiap stop (hindari geocode Nominatim seri).
+- Konfigurasi bila tetap ingin data traffic: turunkan `TOMTOM_TIMEOUT=2.5`,
+  `ENABLE_DYNAMIC_REROUTING=0` (matikan corridor re-route), atau
+  `ENABLE_REALTIME_TRAFFIC=0` untuk demo offline penuh.
+- **Pre-warm** cache agar request kedua instan:
+
+  ```bash
+  python scripts/prewarm_route.py <lat1> <lon1> <lat2> <lon2>
+  ```
+
