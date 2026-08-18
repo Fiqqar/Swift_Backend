@@ -80,6 +80,36 @@ def test_parse_evaluation_invalid():
     assert rag_traffic._parse_evaluation('[{"lat":"x","lng":1}]') == []
 
 
+def test_parse_news_items_clamps_radius_to_2000():
+    items = rag_traffic._parse_news_items(
+        '[{"title":"Banjir","summary":"x","lat":-6.8,"lng":110.8,'
+        '"radius_m":9999,"severity":"HIGH"}]')
+    assert items[0]["radius_m"] == 2000
+
+
+def test_parse_evaluation_clamps_radius_and_multiplier():
+    ev = rag_traffic._parse_evaluation(
+        '[{"lat":-6.8,"lng":110.8,"radius_m":9999,'
+        '"penalty_multiplier":999,"reason":"x"}]')
+    assert ev[0]["radius_m"] == 2000
+    assert ev[0]["penalty_multiplier"] == rag_traffic.RAG_NEWS_MAX_PENALTY
+
+
+def test_parse_rejects_nonfinite_or_out_of_range_coords():
+    assert rag_traffic._parse_news_items(
+        '[{"title":"T","summary":"x","lat":NaN,"lng":110.8,'
+        '"radius_m":300,"severity":"HIGH"}]') == []
+    assert rag_traffic._parse_news_items(
+        '[{"title":"T","summary":"x","lat":-6.8,"lng":-200,'
+        '"radius_m":300,"severity":"HIGH"}]') == []
+    assert rag_traffic._parse_evaluation(
+        '[{"lat":200,"lng":110.8,"radius_m":300,'
+        '"penalty_multiplier":2,"reason":"x"}]') == []
+    assert rag_traffic._parse_evaluation(
+        '[{"lat":-6.8,"lng":Infinity,"radius_m":300,'
+        '"penalty_multiplier":2,"reason":"x"}]') == []
+
+
 # ---------------------------------------------------------------------------
 # In-memory vector store (per kota)
 # ---------------------------------------------------------------------------
