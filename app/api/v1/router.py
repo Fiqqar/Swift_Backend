@@ -6,6 +6,7 @@ from app.api.v1.endpoints import shipments
 from app.api.v1.endpoints import tracking
 from app.api.v1.endpoints import navigation
 from app.api.v1.endpoints import reports
+from app.api.v1.endpoints import uploads
 
 api_router = APIRouter()
 
@@ -23,3 +24,5 @@ api_router.include_router(tracking.router, tags=["Tracking"])
 api_router.include_router(navigation.router, tags=["Navigation"])
 
 api_router.include_router(reports.router, tags=["Driver Report"])
+
+api_router.include_router(uploads.router, prefix="/uploads", tags=["Upload"])
