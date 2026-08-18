@@ -24,7 +24,6 @@ def cloudinary_configured() -> bool:
     return bool(CLOUD_NAME and API_KEY and API_SECRET)
 
 
-# Brand HEIC/HEIF/AVIF (container ISO BMFF, box "ftyp").
 _ISO_BMFF_BRANDS = {
     b"heic", b"heix", b"hevc", b"hevx",
     b"heim", b"heis", b"hevm", b"hevs",

@@ -810,3 +810,41 @@ def _build_health():
 
 
 app.mount("/", StaticFiles(directory="app/ui", html=True), name="ui")
+
+
+def _inject_binary_format(node):
+    """Suntik ``format: binary`` ke node file pada spec OpenAPI.
+
+    FastAPI 0.141 mengeluarkan OpenAPI 3.1 yang merepresentasikan field file
+    sebagai ``type: string, contentMediaType: application/octet-stream`` tanpa
+    ``format: binary``. Swagger UI 5 hanya merender file picker untuk
+    ``format: binary``, jadi tanpa ini field file (mis. ``files`` pada
+    upload foto) tampil sebagai string yang bisa diketik.
+    """
+    if isinstance(node, dict):
+        items = node.get("items")
+        if (isinstance(items, dict)
+                and items.get("contentMediaType") == "application/octet-stream"
+                and "format" not in items):
+            items["format"] = "binary"
+        if (node.get("contentMediaType") == "application/octet-stream"
+                and "format" not in node):
+            node["format"] = "binary"
+        for value in node.values():
+            _inject_binary_format(value)
+    elif isinstance(node, list):
+        for value in node:
+            _inject_binary_format(value)
+
+
+_original_openapi = app.openapi
+
+
+def custom_openapi():
+    schema = _original_openapi()
+    _inject_binary_format(schema)
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
