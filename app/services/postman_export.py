@@ -88,6 +88,28 @@ def _stub_body(schema, components):
             for name, prop in props.items()}
 
 
+def _is_file_prop(prop):
+    """True bila properti multipart adalah file (self ataupun items-nya).
+
+    OpenAPI 3.0 memakai ``format: binary``; OpenAPI 3.1 memakai
+    ``contentMediaType: application/octet-stream`` (bisa pada properti
+    langsung maupun pada ``items`` untuk array file, mis. ``files``).
+    """
+    if not isinstance(prop, dict):
+        return False
+    if prop.get("format") == "binary":
+        return True
+    if prop.get("contentMediaType") == "application/octet-stream":
+        return True
+    items = prop.get("items")
+    if isinstance(items, dict):
+        if items.get("format") == "binary":
+            return True
+        if items.get("contentMediaType") == "application/octet-stream":
+            return True
+    return False
+
+
 def _operation_body(operation, components):
     rb = operation.get("requestBody")
     if not rb:
@@ -106,7 +128,7 @@ def _operation_body(operation, components):
         sch = _resolve(schema, components) or {}
         formdata = []
         for name, prop in (sch.get("properties", {})).items():
-            if name == "file" or prop.get("format") == "binary":
+            if _is_file_prop(prop):
                 formdata.append({"key": name, "type": "file", "src": None})
             else:
                 formdata.append({
