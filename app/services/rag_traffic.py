@@ -137,7 +137,7 @@ def _parse_news_items(text: str) -> list[dict]:
             "summary": ai_agent._sanitize_reason(raw.get("summary", "")),
             "lat": lat,
             "lng": lng,
-            "radius_m": _clamp(raw.get("radius_m", 500), 50, 5000),
+            "radius_m": _clamp(raw.get("radius_m", 500), 50, 2000),
             "severity": severity,
         })
     return items
@@ -159,10 +159,10 @@ def _parse_evaluation(text: str) -> list[dict]:
         out.append({
             "lat": lat,
             "lng": lng,
-            "radius_m": _clamp(raw.get("radius_m", 500), 50, 5000),
+            "radius_m": _clamp(raw.get("radius_m", 500), 50, 2000),
             "penalty_multiplier": _clamp(
                 raw.get("penalty_multiplier", 1.0),
-                1.0, RAG_NEWS_MAX_PENALTY * 2.0),
+                1.0, RAG_NEWS_MAX_PENALTY),
             "reason": ai_agent._sanitize_reason(raw.get("reason", "")),
         })
     return out
