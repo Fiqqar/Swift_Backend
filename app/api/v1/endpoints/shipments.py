@@ -26,6 +26,7 @@ from app.services.cloudinary_service import (
     CloudinaryNotConfiguredError,
     UPLOAD_FOLDER,
     cloudinary_configured,
+    sniff_image_format,
     upload_image,
 )
 
@@ -727,33 +728,6 @@ _POD_ALLOWED_TYPES = {
 _MAX_POD_FILE_BYTES = 10 * 1024 * 1024
 _MAX_POD_FILES = 5
 
-# Brand HEIC/HEIF/AVIF (container ISO BMFF, box "ftyp").
-_ISO_BMFF_BRANDS = {
-    b"heic", b"heix", b"hevc", b"hevx",
-    b"heim", b"heis", b"hevm", b"hevs",
-    b"mif1", b"msf1", b"avif",
-}
-
-
-def _sniff_image_format(data: bytes) -> str | None:
-    """Deteksi format gambar dari isi file (magic bytes).
-
-    Content-Type pada header multipart bisa dipalsukan klien (mis. file PHP
-    berlabel ``image/jpeg``), jadi keputusan utama didasarkan pada isi file,
-    bukan header.
-    """
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return "image/webp"
-    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _ISO_BMFF_BRANDS:
-        return "image/heic"
-    return None
-
 
 def _read_photo(upload: UploadFile, index: int):
     """Baca satu file foto lalu validasi tipe (header + magic bytes) dan ukuran.
@@ -771,7 +745,7 @@ def _read_photo(upload: UploadFile, index: int):
         return None, f"{label} kosong", 400
     if len(data) > _MAX_POD_FILE_BYTES:
         return None, f"{label} terlalu besar (maks 10 MB)", 400
-    if _sniff_image_format(data) is None:
+    if sniff_image_format(data) is None:
         return None, (
             f"{label} bukan file gambar yang valid "
             "(isi dicek via magic bytes, bukan sekadar Content-Type)"
