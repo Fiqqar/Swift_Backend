@@ -63,7 +63,10 @@ def _paket_dict(paket: Paket) -> dict:
     return {
         "id": paket.id,
         "nama": paket.nama,
+        "nomor_telepon": paket.nomor_telepon,
         "alamat": paket.alamat,
+        "latitude": paket.latitude,
+        "longitude": paket.longitude,
         "jenis_pengiriman": paket.jenis_pengiriman,
         "service_type": paket.service_type,
     }
