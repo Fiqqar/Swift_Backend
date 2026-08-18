@@ -101,6 +101,8 @@ def _env_float(name: str, default: float) -> float:
 
 _DELIVERY_LEG_CONCURRENCY = max(1, _env_int("DELIVERY_LEG_CONCURRENCY", 5))
 
+_ORDER_TOP_K = max(1, _env_int("DELIVERY_ORDER_TOP_K", 3))
+
 
 def last_mile_enabled(payload) -> bool:
     if payload.last_mile_precision is not None:
@@ -150,20 +152,21 @@ async def _resolve_delivery_start(request: Request, redis,
                                   payload) -> tuple[float, float]:
     """Hirarki fallback titik awal rute (design doc Bagian 6.1).
 
-    1. Prioritas 1: `courier_position` dari payload request (eksplisit).
-    2. Prioritas 2: posisi kurir terbaru dari Redis `driver:pos:{kurir_id}`
-       (kurir_id dari token JWT yang aktif).
+    1. Prioritas 1: posisi kurir terbaru dari Redis `driver:pos:{kurir_id}`
+       (diisi Webhook/WebSocket; kurir_id dari token JWT yang aktif).
+    2. Prioritas 2: `courier_position` dari payload request (eksplisit) —
+       dipakai hanya bila posisi webhook tidak tersedia.
     3. Prioritas 3: `hub_origin` (perilaku eksisting).
     """
-    if payload.courier_position is not None:
-        return (payload.courier_position.latitude,
-                payload.courier_position.longitude)
-
     kurir_id = _token_kurir_id(request)
     if kurir_id is not None:
         pos = await get_kurir_position_latlon(redis, kurir_id)
         if pos is not None:
             return pos
+
+    if payload.courier_position is not None:
+        return (payload.courier_position.latitude,
+                payload.courier_position.longitude)
 
     if payload.hub_origin is not None:
         return (payload.hub_origin.latitude, payload.hub_origin.longitude)
@@ -616,6 +619,37 @@ async def _best_route(app, plan, redis, traffic_penalties,
     return response, node_sequence, final_penalties, mode
 
 
+async def _ordering_road_distance(app, redis, mode: str, last_mile: bool,
+                                  lat1: float, lon1: float,
+                                  lat2: float, lon2: float) -> float:
+    """Jarak jalan nyata (meter) untuk penentuan urutan stop (ordering).
+
+    Memakai rute dasar (tanpa traffic) via `_compute_route` + cache Redis
+    (`route:*`, TTL 300s) sehingga hasilnya akurat sekaligus cepat pada
+    request berikutnya. Bila area tidak tercakup / rute gagal, fallback ke
+    jarak haversine agar penentuan urutan tidak pernah crash (error rute
+    yang sebenarnya tetap ditampilkan saat leg final dihitung).
+    """
+    fallback = haversine_distance((lat1, lon1), (lat2, lon2))
+    try:
+        plan = await run_in_threadpool(
+            _resolve_plan, app, lat1, lon1, lat2, lon2)
+    except AreaNotCoveredError:
+        return fallback
+    try:
+        response, _nodes = await _compute_route(
+            app, plan, redis, {}, lat1, lon1, lat2, lon2,
+            last_mile=last_mile, mode=mode, need_nodes=False)
+    except Exception as exc:
+        logger.info(
+            "[ORDER] Rute ordering (%.4f,%.4f)->(%.4f,%.4f) gagal (%s); "
+            "fallback haversine.", lat1, lon1, lat2, lon2, exc)
+        return fallback
+    if response is None or response.total_distance_meters is None:
+        return fallback
+    return float(response.total_distance_meters)
+
+
 @router.post("/find-route", response_model=RouteResponse,
              summary="Hitung rute terbaik antara dua titik",
              description=(
@@ -819,13 +853,20 @@ async def find_route_options(payload: RouteRequest, request: Request):
              response_model=OptimizedDeliveryRouteResponse,
              summary="Rute pengantaran multi-stop (TSP)",
              description=(
-                 "Menentukan urutan stop paling efisien (TSP heuristic, EXPRESS "
+                 "Menentukan urutan stop paling efisien (hybrid greedy, EXPRESS "
                  "diutamakan) lalu menghitung leg rute sungguhan per pasangan stop.\n\n"
                  "- **Wajib:** `deliveries` (minimal 1).\n"
-                 "- **Titik awal (fallback chain):** `courier_position` "
-                 "(prioritas 1) → posisi kurir dari Redis `driver:pos:{kurir_id}` "
-                 "(prioritas 2, dari token JWT) → `hub_origin` (prioritas 3). "
+                 "- **Titik awal (fallback chain):** posisi kurir dari Redis "
+                 "`driver:pos:{kurir_id}` (prioritas 1, dari token JWT, diisi "
+                 "Webhook/WebSocket) → `courier_position` di payload (prioritas "
+                 "2) → `hub_origin` (prioritas 3). "
                  "Minimal satu dari `courier_position`/`hub_origin` wajib ada.\n"
+                 "- **Urutan stop (hybrid greedy):** dari posisi saat ini ambil "
+                 "top-K kandidat terdekat (haversine, env `DELIVERY_ORDER_TOP_K` "
+                 "default 3), hitung jarak jalan nyata untuk kandidat itu (cache "
+                 "Redis), pilih yang paling efisien, lalu ulangi dari stop "
+                 "terpilih hingga stop terakhir — persis perilaku kurir "
+                 "`dari lokasi sekarang cari yang terdekat/efisien`.\n"
                  "- **Opsional:** `mode`, `last_mile_precision`, "
                  "`dynamic_rerouting`, `skip_traffic`, `return_to_hub`.\n\n"
                  "- Alamat tanpa `latitude`/`longitude` di-geocode (Nominatim).\n"
@@ -834,21 +875,27 @@ async def find_route_options(payload: RouteRequest, request: Request):
                  "### Performa\n"
                  "- Leg diproses **paralel** dengan konkurrensi terbatas "
                  "(env `DELIVERY_LEG_CONCURRENCY`, default 5).\n"
+                 "- Jarak nyata untuk ordering memakai **cache rute Redis**; "
+                 "request pertama lebih lambat (~N×K hit A*), request berikutnya "
+                 "instan.\n"
                  "- Set `skip_traffic: true` untuk **memotong probe jaringan "
                  "eksternal TomTom** di tiap leg (A* murni) — respons jauh "
                  "lebih cepat, cocok untuk demo/testing."))
 async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
                                         request: Request):
-    """Rute pengantaran multi-stop dari Hub ke banyak penerima.
+    """Rute pengantaran multi-stop dari posisi kurir ke banyak penerima.
 
     - Meng-geocode alamat tiap delivery (Nominatim + cache Redis) bila koordinat
       tidak diberikan inline.
-    - Menentukan urutan stop (TSP heuristic) dengan prioritas EXPRESS.
+    - Menentukan urutan stop (hybrid greedy) berbasis jarak jalan nyata dengan
+      prioritas EXPRESS, selalu dimulai dari posisi kurir saat ini.
     - Menghitung leg sungguhan hanya untuk pasangan stop berurutan, diproses
       paralel dengan konkurrensi terbatas.
     """
     from app.services.geocode import geocode_address
-    from app.services.pathfinding.delivery_optimizer import optimize_stop_order
+    from app.services.pathfinding.delivery_optimizer import (
+        optimize_stop_order_hybrid,
+    )
 
     redis = getattr(request.app.state, "redis", None)
     hub = ((payload.hub_origin.latitude, payload.hub_origin.longitude)
@@ -883,9 +930,12 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
         )
 
     service_types = [s["service_type"] for s in stops]
-    order = optimize_stop_order(
+    order = await optimize_stop_order_hybrid(
         start, [s["coordinate"] for s in stops],
         service_types=service_types,
+        road_cost_fn=lambda o, d: _ordering_road_distance(
+            request.app, redis, mode, last_mile, o[0], o[1], d[0], d[1]),
+        top_k=_ORDER_TOP_K,
         return_to_hub=payload.return_to_hub,
     )
     ordered = [stops[i] for i in order]

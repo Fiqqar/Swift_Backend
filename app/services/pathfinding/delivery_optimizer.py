@@ -1,12 +1,15 @@
-"""Optimisasi urutan stop pengantaran (TSP heuristic) untuk last-mile.
+"""Optimisasi urutan stop pengantaran (hybrid greedy) untuk last-mile.
 
-Menggunakan jarak haversine (straight-line) untuk membangun matriks jarak dan
-menentukan urutan kunjungan, lalu menandai paket EXPRESS agar cenderung diantar
+Menggunakan jarak haversine (straight-line) untuk memilih top-K kandidat
+terdekat per langkah, lalu jarak jalan nyata (`road_cost_fn`) untuk memilih
+kandidat paling efisien, dan menandai paket EXPRESS agar cenderung diantar
 lebih dulu lewat penalti biaya. Rute sungguhan per-leg dihitung di endpoint
 pathfinding (bukan di sini) sehingga request pertama tidak perlu N^2 panggilan
 engine.
 """
 
+import asyncio
+import inspect
 import math
 
 from app.services.pathfinding.core_a_star import haversine_distance
@@ -102,6 +105,75 @@ def optimize_stop_order(
     route = _nearest_neighbor(matrix, 0)
     route = _two_opt(matrix, route, return_to_start=return_to_hub)
     return [idx - 1 for idx in route if idx != 0]
+
+
+async def optimize_stop_order_hybrid(
+    start: tuple[float, float],
+    deliveries: list[tuple[float, float]],
+    service_types: list[str] | None = None,
+    road_cost_fn=None,
+    express_discount: float = EXPRESS_DISCOUNT_DEFAULT,
+    top_k: int = 3,
+    return_to_hub: bool = False,
+) -> list[int]:
+    """Urutkan indeks pengantaran (0-based) memakai hybrid greedy murni.
+
+    Dari posisi saat ini ambil `top_k` kandidat terdekat secara haversine,
+    lalu hitung jarak jalan nyata (via `road_cost_fn`) untuk kandidat itu
+    secara paralel dan pilih yang cost-nya paling kecil. Posisi bergeser ke
+    stop terpilih lalu diulang sampai semua stop terkurasi — persis perilaku
+    kurir "dari lokasi sekarang selalu cari yang paling dekat/efisien".
+
+    - `start`: koordinat titik awal (posisi kurir dari webhook/Redis).
+    - `deliveries`: koordinat (lat, lon) tiap alamat penerima.
+    - `service_types`: opsional; berisi 'EXPRESS'/'REGULAR' per delivery.
+      Cost MENUJU stop EXPRESS dikali `express_discount` (<1) sehingga paket
+      cepat cenderung diantar lebih dulu (prioritas EXPRESS dipertahankan).
+    - `road_cost_fn`: callable (sync atau async) `(origin, dest) -> cost`
+      (mis. jarak jalan dalam meter). Bila None, memakai haversine.
+    - `top_k`: jumlah kandidat terdekat haversine yang dievaluasi dengan
+      jarak jalan nyata per langkah (default 3).
+    - `return_to_hub`: dipertahankan untuk kompatibilitas API; tidak
+      mengubah urutan delivery (leg pulang ke hub tetap dibangun di endpoint).
+    """
+    if not deliveries:
+        return []
+    if road_cost_fn is None:
+        async def _haversine_cost(o, d):
+            return haversine_distance(o, d)
+        cost_fn = _haversine_cost
+    else:
+        async def _wrapped_cost(o, d):
+            value = road_cost_fn(o, d)
+            if inspect.isawaitable(value):
+                return await value
+            return value
+        cost_fn = _wrapped_cost
+
+    remaining = list(range(len(deliveries)))
+    order: list[int] = []
+    current = start
+    top_k = max(1, int(top_k))
+
+    while remaining:
+        cand = sorted(
+            remaining,
+            key=lambda i: haversine_distance(current, deliveries[i]),
+        )[:top_k]
+        costs = await asyncio.gather(
+            *(cost_fn(current, deliveries[i]) for i in cand))
+        best_i = min(
+            range(len(cand)),
+            key=lambda p: costs[p] * (
+                express_discount
+                if service_types and service_types[cand[p]] == "EXPRESS"
+                else 1.0),
+        )
+        chosen = cand[best_i]
+        order.append(chosen)
+        current = deliveries[chosen]
+        remaining.remove(chosen)
+    return order
 
 
 def ensure_express_first(

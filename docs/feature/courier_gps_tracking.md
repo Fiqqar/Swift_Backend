@@ -370,7 +370,7 @@ Ikuti pola test yang sudah ada:
 | 14| Push `geofence_enter`/`geofence_exit` via WS                | ✅ Ada  (`_geofence_check`) |
 | 15| State machine geofence di Redis (`driver:geofence:{id}:{pid}`) + anti-spam reconnect | ✅ Ada  (`geofence_event`) |
 | 16| Cache stop belum terkirim `driver:stops:{id}` + invalidasi  | ✅ Ada  (`_get_stops` + `_invalidate_tracking_cache`) |
-| 17| Fallback chain titik awal (courier → Redis → hub)           | ✅ Ada  (`resolve_start_point`) |
+| 17| Fallback chain titik awal (Redis → courier → hub)           | ✅ Ada  (`resolve_start_point`) |
 | 18| `/geofence-check` dipertahankan sebagai fallback            | ✅ Ada  |
 
 > Implementasi dasar selesai. Langkah 6 (dynamic rerouting memakai
@@ -387,7 +387,8 @@ Ikuti pola test yang sudah ada:
    (guard oleh `ENABLE_LIVE_TRACKING`).
 3. ✅ `courier_position` opsional pada `OptimizedDeliveryRouteRequest`
    (`app/schemas/pathfinding.py`) dan **fallback chain** titik awal:
-   `courier_position → HGETALL driver:pos → hub_origin`.
+   `HGETALL driver:pos → courier_position → hub_origin` (posisi webhook/Redis
+   menang; `courier_position` dipakai hanya bila posisi Redis kosong).
 4. ✅ Geofence server-side: resolusi stop belum terkirim
    (cache `driver:stops:{id}`), hitung haversine, **state machine per paket di
    Redis** (`driver:geofence:{kurir_id}:{package_id}` + TTL `KURIR_GEOFENCE_TTL_SECONDS`),
