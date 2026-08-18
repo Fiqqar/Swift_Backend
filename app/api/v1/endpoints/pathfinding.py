@@ -149,27 +149,33 @@ def _token_kurir_id(request: Request) -> int | None:
 
 
 async def _resolve_delivery_start(request: Request, redis,
-                                  payload) -> tuple[float, float]:
+                                  payload) -> tuple[float, float, str]:
     """Hirarki fallback titik awal rute (design doc Bagian 6.1).
 
-    1. Prioritas 1: posisi kurir terbaru dari Redis `driver:pos:{kurir_id}`
-       (diisi Webhook/WebSocket; kurir_id dari token JWT yang aktif).
-    2. Prioritas 2: `courier_position` dari payload request (eksplisit) —
-       dipakai hanya bila posisi webhook tidak tersedia.
-    3. Prioritas 3: `hub_origin` (perilaku eksisting).
+    Mengembalikan `(lat, lon, source)` dengan `source`:
+      1. Prioritas 1: posisi kurir terbaru dari Redis `driver:pos:{kurir_id}`
+         (diisi Webhook/WebSocket; kurir_id dari token JWT yang aktif) —
+         `source = "webhook"`.
+      2. Prioritas 2: `courier_position` dari payload request (eksplisit) —
+         dipakai hanya bila posisi webhook tidak tersedia —
+         `source = "courier_position"`.
+      3. Prioritas 3: `hub_origin` (perilaku eksisting) —
+         `source = "hub_origin"`.
     """
     kurir_id = _token_kurir_id(request)
     if kurir_id is not None:
         pos = await get_kurir_position_latlon(redis, kurir_id)
         if pos is not None:
-            return pos
+            return (pos[0], pos[1], "webhook")
 
     if payload.courier_position is not None:
         return (payload.courier_position.latitude,
-                payload.courier_position.longitude)
+                payload.courier_position.longitude,
+                "courier_position")
 
     if payload.hub_origin is not None:
-        return (payload.hub_origin.latitude, payload.hub_origin.longitude)
+        return (payload.hub_origin.latitude, payload.hub_origin.longitude,
+                "hub_origin")
 
     if kurir_id is None:
         detail = (
@@ -900,7 +906,9 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     redis = getattr(request.app.state, "redis", None)
     hub = ((payload.hub_origin.latitude, payload.hub_origin.longitude)
            if payload.hub_origin is not None else None)
-    start = await _resolve_delivery_start(request, redis, payload)
+    _start = await _resolve_delivery_start(request, redis, payload)
+    start = (_start[0], _start[1])
+    start_source = _start[2]
     mode = _normalize_mode(payload)
     last_mile = last_mile_enabled(payload)
     need_nodes = True
@@ -1006,6 +1014,7 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
         legs=legs,
         source=sources[0] if sources else "demo",
         warning="; ".join(dict.fromkeys(warnings)) or None,
+        start_source=start_source,
     )
 
     if nav_enabled(payload):

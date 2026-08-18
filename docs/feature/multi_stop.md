@@ -19,6 +19,10 @@ Aplikasi membutuhkan fitur pengantaran paket multi-stop dari satu Drop Point/Hub
   cenderung diantar lebih dulu.
 - Kembalikan response berupa rute terurut (`optimized_legs`) beserta urutan
   `stop_order` (misal: Stop 1, Stop 2, Stop 3).
+- **Koordinat langsung:** tiap `deliveries[].latitude`/`longitude` opsional —
+  bila diberikan dipakai langsung (tanpa geocode); bila kosong, `alamat`
+  di-geocode (Nominatim). UI demo `/delivery.html` menerima format baris
+  `alamat | EXPRESS | lat,lon` atau `lat,lon`.
 
 ### 2. Multi-Leg Navigation Payload Response
 

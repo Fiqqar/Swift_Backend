@@ -86,6 +86,8 @@
   var navWs = null, navRouteId = null, navSimTimer = null, navSimIdx = 0;
   var navRouteCoords = null, navRouteLayer = null, navStatus = { enabled: false };
   var navData = null;
+  var auth = { token: localStorage.getItem('delivery_token') || '', kurir: null };
+  var posWs = null, geoWatchId = null, webhookActive = false;
 
   var iconColors = {
     hub: '#0f2a43',
@@ -116,7 +118,187 @@
     }).addTo(map).bindTooltip('Posisi kurir');
     $('txt-hub').textContent = fmt(hub);
     $('txt-pos').textContent = fmt(curPos);
-    $('btn-optimize').disabled = !(hub && parseDeliveries().length > 0);
+    updateOptimizeBtn();
+  }
+
+  function canOptimize() {
+    return (hub || curPos) && parseDeliveries().length > 0;
+  }
+
+  function updateOptimizeBtn() {
+    $('btn-optimize').disabled = !canOptimize();
+  }
+
+  function authHeaders() {
+    return auth.token ? { 'Authorization': 'Bearer ' + auth.token } : {};
+  }
+
+  function renderAuthUI() {
+    var logged = !!auth.token;
+    $('btn-login').style.display = logged ? 'none' : '';
+    $('btn-logout').style.display = logged ? '' : 'none';
+    var who = (auth.kurir && auth.kurir.nama) ||
+      (auth.kurir && auth.kurir.id != null ? 'kurir #' + auth.kurir.id : '');
+    $('login-status').textContent = logged
+      ? ('Login OK: ' + (who || 'kurir') +
+         '. Webhook-first aktif bila posisi di-stream ke WS.')
+      : 'Belum login. Titik awal fallback: courier_position / hub.';
+  }
+
+  async function doLogin() {
+    var u = $('inp-username').value.trim();
+    var p = $('inp-password').value;
+    if (!u || !p) { log('Login: username & password wajib diisi.'); return; }
+    $('btn-login').disabled = true;
+    log('Login kurir...');
+    try {
+      var resp = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p }),
+        signal: AbortSignal.timeout(15000)
+      });
+      var data = await parseJson(resp);
+      if (!resp.ok || !data.data || !data.data.token) {
+        throw new Error(data.message || data.detail || ('HTTP ' + resp.status));
+      }
+      auth.token = data.data.token;
+      auth.kurir = data.data.kurir || null;
+      localStorage.setItem('delivery_token', auth.token);
+      renderAuthUI();
+      log('Login OK: ' + ((auth.kurir && auth.kurir.nama) || 'kurir') + '.');
+    } catch (err) {
+      log('Login gagal: ' + ((err && err.message) ? err.message : String(err)));
+      showNotice('Login gagal: ' + ((err && err.message) ? err.message : String(err)));
+    } finally {
+      $('btn-login').disabled = false;
+    }
+  }
+
+  function doLogout() {
+    auth.token = ''; auth.kurir = null;
+    localStorage.removeItem('delivery_token');
+    stopPositionStream();
+    renderAuthUI();
+    log('Logout. Titik awal fallback: courier_position / hub.');
+  }
+
+  async function verifyToken() {
+    if (!auth.token) return;
+    try {
+      var resp = await fetch('/api/v1/auth/me', { headers: authHeaders() });
+      var data = await parseJson(resp);
+      if (resp.ok && data.data) {
+        auth.kurir = data.data;
+      } else {
+        auth.token = ''; auth.kurir = null;
+        localStorage.removeItem('delivery_token');
+      }
+    } catch (e) { /* token disimpan, tunggu login ulang bila perlu */ }
+    renderAuthUI();
+  }
+
+  function sendPositionToWs(lat, lon) {
+    if (posWs && posWs.readyState === WebSocket.OPEN) {
+      posWs.send(JSON.stringify({ type: 'position', lat: lat, lon: lon }));
+    }
+  }
+
+  function setCourierPosition(lat, lon, opts) {
+    var dev = !!(opts && opts.deviate);
+    var size = dev ? 16 : 14;
+    curPos = [lat, lon];
+    if (posMarker) map.removeLayer(posMarker);
+    posMarker = L.marker(L.latLng(lat, lon), {
+      icon: L.divIcon({
+        html: '<div style="background:' + (dev ? '#b3372f' : '#0f6dc1') +
+          ';border:2px solid #fff;border-radius:50%;width:' + size + 'px;height:' + size +
+          'px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>',
+        className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2]
+      })
+    }).addTo(map)
+      .bindTooltip(dev ? 'Posisi kurir (deviasi)' : 'Posisi kurir')
+      .openTooltip();
+    $('txt-pos').textContent = fmt(curPos);
+    sendPositionToWs(lat, lon);
+    updateOptimizeBtn();
+  }
+
+  function stopPositionStream() {
+    if (posWs) { try { posWs.close(); } catch (e) {} posWs = null; }
+    if (geoWatchId != null) {
+      navigator.geolocation.clearWatch(geoWatchId);
+      geoWatchId = null;
+    }
+    webhookActive = false;
+    $('chk-stream').checked = false;
+    $('ws-status').textContent = 'WS posisi: nonaktif';
+    $('ws-status').style.color = '';
+  }
+
+  function startPositionStream() {
+    if (!auth.token) {
+      showNotice('Login dulu untuk stream posisi (webhook-first).');
+      $('chk-stream').checked = false;
+      return;
+    }
+    if (!navigator.geolocation) {
+      showNotice('Geolocation tidak didukung browser.');
+      $('chk-stream').checked = false;
+      return;
+    }
+    stopPositionStream();
+    $('chk-stream').checked = true;
+    $('ws-status').textContent = 'WS posisi: menghubungkan...';
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    posWs = new WebSocket(proto + location.host +
+      '/api/v1/ws/driver/position?token=' + encodeURIComponent(auth.token));
+    posWs.onopen = function () {
+      $('ws-status').textContent = 'WS posisi: terhubung (posisi dari geolokasi dikirim)';
+    };
+    posWs.onmessage = function (evt) {
+      var msg;
+      try { msg = JSON.parse(evt.data); } catch (e) { return; }
+      if (msg.type === 'ack' && msg.ok) {
+        webhookActive = !!msg.stored;
+        $('ws-status').textContent = msg.stored
+          ? 'WS posisi: tersimpan di Redis (webhook-first)'
+          : 'WS posisi: terhubung tapi Redis tidak menyimpan' +
+            (msg.warning ? ' (' + msg.warning + ')' : '');
+        $('ws-status').style.color = msg.stored ? '#1e7e34' : '#b3372f';
+      }
+      if (msg.type === 'error') {
+        $('ws-status').textContent = 'WS posisi: error (' + (msg.detail || '') + ')';
+        $('ws-status').style.color = '#b3372f';
+      }
+    };
+    posWs.onclose = function () {
+      webhookActive = false;
+      if ($('chk-stream').checked) {
+        $('ws-status').textContent = 'WS posisi: terputus (ditutup server / token invalid)';
+        $('ws-status').style.color = '#b3372f';
+      }
+    };
+    posWs.onerror = function () {
+      $('ws-status').textContent = 'WS posisi: koneksi gagal';
+      $('ws-status').style.color = '#b3372f';
+    };
+    geoWatchId = navigator.geolocation.watchPosition(function (pos) {
+      setCourierPosition(pos.coords.latitude, pos.coords.longitude);
+    }, function (err) {
+      log('ERROR geolokasi (' + err.code + '): ' + err.message);
+    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
+  }
+
+  function vehicleMode() {
+    var el = document.querySelector('input[name="vehicle"]:checked');
+    return el ? el.value : 'motorcycle';
+  }
+
+  function parseCoords(s) {
+    var m = s.match(/^(-?[\d.]+)\s*,\s*(-?[\d.]+)$/);
+    if (!m) return null;
+    return { latitude: parseFloat(m[1]), longitude: parseFloat(m[2]) };
   }
 
   function parseDeliveries() {
@@ -132,7 +314,24 @@
       if (parts.length > 1 && parts[1]) {
         svc = parts[1].toUpperCase().indexOf('EXPRESS') >= 0 ? 'EXPRESS' : 'REGULAR';
       }
-      if (alamat) out.push({ alamat: alamat, service_type: svc });
+      if (!alamat) return;
+      var coords = null;
+      if (parts.length > 2 && parts[2]) {
+        coords = parseCoords(parts[2]);
+      } else {
+        coords = parseCoords(alamat);
+        if (coords) alamat = alamat + ' (koordinat)';
+      }
+      if (!coords) {
+        out.push({ alamat: alamat, service_type: svc });
+      } else {
+        out.push({
+          alamat: alamat,
+          service_type: svc,
+          latitude: coords.latitude,
+          longitude: coords.longitude
+        });
+      }
     });
     return out;
   }
@@ -369,8 +568,7 @@
   }
 
   function buildPayload(remaining) {
-    return {
-      hub_origin: { latitude: curPos[0], longitude: curPos[1] },
+    var payload = {
       deliveries: remaining.map(function (s) {
         return {
           package_id: s.package_id,
@@ -381,11 +579,41 @@
           longitude: s.longitude
         };
       }),
-      mode: 'motorcycle',
+      mode: vehicleMode(),
       last_mile_precision: true,
       skip_traffic: $('chk-skip-traffic').checked,
       return_to_hub: false
     };
+    if (curPos) {
+      payload.courier_position = { latitude: curPos[0], longitude: curPos[1] };
+    } else if (hub) {
+      payload.hub_origin = { latitude: hub[0], longitude: hub[1] };
+    }
+    return payload;
+  }
+
+  function buildOptimizePayload(deliveries) {
+    var payload = {
+      deliveries: deliveries.map(function (d) {
+        var item = { alamat: d.alamat, service_type: d.service_type, recipient_name: d.alamat.split(',')[0] };
+        if (d.latitude != null && d.longitude != null) {
+          item.latitude = d.latitude;
+          item.longitude = d.longitude;
+        }
+        return item;
+      }),
+      mode: vehicleMode(),
+      last_mile_precision: true,
+      skip_traffic: $('chk-skip-traffic').checked,
+      return_to_hub: $('chk-return').checked
+    };
+    if (curPos) {
+      payload.courier_position = { latitude: curPos[0], longitude: curPos[1] };
+    }
+    if (hub) {
+      payload.hub_origin = { latitude: hub[0], longitude: hub[1] };
+    }
+    return payload;
   }
 
   function remainingStops() {
@@ -482,7 +710,7 @@
   }
 
   async function runOptimize() {
-    if (!hub) return;
+    if (!(hub || curPos)) return;
     var deliveries = parseDeliveries();
     if (!deliveries.length) return;
     var btn = $('btn-optimize');
@@ -494,17 +722,8 @@
     try {
       var resp = await fetch('/api/v1/pathfinding/find-optimized-delivery-route', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hub_origin: { latitude: hub[0], longitude: hub[1] },
-          deliveries: deliveries.map(function (d) {
-            return { alamat: d.alamat, service_type: d.service_type, recipient_name: d.alamat.split(',')[0] };
-          }),
-          mode: 'motorcycle',
-          last_mile_precision: true,
-          skip_traffic: $('chk-skip-traffic').checked,
-          return_to_hub: $('chk-return').checked
-        }),
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify(buildOptimizePayload(deliveries)),
         signal: controller.signal
       });
       var data = await parseJson(resp);
@@ -518,6 +737,7 @@
       drawOverview(state);
       log('Rute OK: ' + data.total_distance_km + ' km, ' + data.total_duration_mins +
           ' mnt, ' + data.total_legs + ' leg, ' + data.stops.length + ' stop (sumber=' + data.source + ')' +
+          (data.start_source ? ' · titik awal=' + data.start_source : '') +
           (navRouteId ? ' · route_id=' + navRouteId : ''));
     } catch (err) {
       var friendly = (err && err.name === 'AbortError')
@@ -529,7 +749,7 @@
     } finally {
       clearTimeout(timeoutId);
       hideLoading();
-      btn.disabled = !(hub && deliveries.length > 0);
+      btn.disabled = !canOptimize();
     }
   }
 
@@ -544,7 +764,7 @@
     try {
       var resp = await fetch('/api/v1/pathfinding/find-optimized-delivery-route', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
         body: JSON.stringify(buildPayload(remain)),
         signal: AbortSignal.timeout(600000)
       });
@@ -557,10 +777,12 @@
       if (navSimTimer || (navWs && navWs.readyState === WebSocket.OPEN)) stopNavigation();
       renderResult({ status: 'success', total_distance_km: data.total_distance_km,
                      total_duration_mins: data.total_duration_mins,
-                     total_legs: data.total_legs, source: data.source, warning: data.warning });
+                     total_legs: data.total_legs, source: data.source, warning: data.warning,
+                     start_source: data.start_source });
       drawOverview(state);
       log('Sisa rute dioptimasi ulang: ' + data.total_distance_km + ' km, ' +
           data.total_duration_mins + ' mnt, ' + data.stops.length + ' stop.' +
+          (data.start_source ? ' · titik awal=' + data.start_source : '') +
           (navRouteId ? ' · route_id=' + navRouteId : ''));
     } catch (err) {
       var friendly = (err && err.message) ? err.message : String(err);
@@ -579,6 +801,7 @@
     $('r-legs').textContent = data.total_legs != null ? data.total_legs : '-';
     $('r-source').textContent = data.source || '-';
     $('r-warning').textContent = data.warning || '-';
+    $('txt-start-source').textContent = data.start_source || '-';
     var src = data.source || '';
     if (src) setBadge('b-source', 'sumber: ' + src, 'ok');
     if (src && data.warning) showNotice('Peringatan: ' + data.warning);
@@ -590,19 +813,29 @@
       placeHub(e.latlng);
     } else {
       deviating = true;
-      curPos = [e.latlng.lat, e.latlng.lng];
-      if (posMarker) map.removeLayer(posMarker);
-      posMarker = L.marker(e.latlng, {
-        icon: L.divIcon({
-          html: '<div style="background:#b3372f;border:2px solid #fff;border-radius:50%;width:16px;height:16px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>',
-          className: '', iconSize: [16, 16], iconAnchor: [8, 8]
-        })
-      }).addTo(map).bindTooltip('Posisi kurir (deviasi)').openTooltip();
-      $('txt-pos').textContent = fmt(curPos);
+      setCourierPosition(e.latlng.lat, e.latlng.lng, { deviate: true });
       log('Deviasi: kurir kini di ' + fmt(curPos));
       if (state && activeIndex < state.stops.length) checkGeofence(state.stops[activeIndex]);
       if (state) $('btn-recalc').disabled = false;
     }
+  });
+
+  $('btn-login').addEventListener('click', doLogin);
+  $('btn-logout').addEventListener('click', doLogout);
+  $('btn-geo').addEventListener('click', function () {
+    if (!navigator.geolocation) { log('ERROR: geolocation tidak didukung browser.'); return; }
+    log('Mengambil lokasi...');
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      setCourierPosition(pos.coords.latitude, pos.coords.longitude);
+      log('Posisi kurir: ' + fmt(curPos) + ' (±' + Math.round(pos.coords.accuracy) + ' m)');
+    }, function (err) {
+      log('ERROR lokasi (' + err.code + '): ' + err.message);
+    }, { enableHighAccuracy: true, timeout: 15000 });
+  });
+
+  $('chk-stream').addEventListener('change', function () {
+    if (this.checked) startPositionStream();
+    else stopPositionStream();
   });
 
   $('btn-optimize').addEventListener('click', runOptimize);
@@ -626,12 +859,11 @@
     drawOverview(state);
   });
 
-  $('txt-deliveries').addEventListener('input', function () {
-    $('btn-optimize').disabled = !(hub && parseDeliveries().length > 0);
-  });
+  $('txt-deliveries').addEventListener('input', updateOptimizeBtn);
 
   $('btn-reset').addEventListener('click', function () {
     stopNavigation();
+    stopPositionStream();
     hideLoading();
     hub = curPos = null; deviating = false; activeIndex = 0; state = null;
     geoOk = false; geoSeq++;
@@ -640,7 +872,8 @@
     clearMapLayers();
     $('nav-controls').style.display = 'none';
     $('txt-hub').textContent = '-'; $('txt-pos').textContent = '-';
-    $('btn-optimize').disabled = true;
+    $('txt-start-source').textContent = '-';
+    updateOptimizeBtn();
     $('nav-geofence').textContent = 'Cek geofence…';
     $('nav-geofence').style.color = '';
     $('r-status').textContent = '-'; $('r-dist').textContent = '-';
@@ -656,7 +889,9 @@
   });
 
   async function boot() {
+    renderAuthUI();
     checkNavStatus();
+    verifyToken();
     log('Memuat status server...');
     showLoading('Memeriksa status server...');
     try {
@@ -664,7 +899,7 @@
       var data = await parseJson(resp);
       if (!resp.ok) throw new Error(data.detail || data.error || ('HTTP ' + resp.status));
       setBadge('b-server', 'Server: OK', 'ok');
-      log('Server OK. Klik peta untuk menetapkan Hub, isi alamat penerima, lalu Optimasi.');
+      log('Server OK. Login kurir (opsional), klik peta untuk Hub / gunakan lokasi, isi alamat penerima, lalu Optimasi.');
     } catch (err) {
       setBadge('b-server', 'Server: ERROR', 'bad');
       log('ERROR server: ' + err.message);

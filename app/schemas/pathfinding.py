@@ -231,6 +231,11 @@ class OptimizedDeliveryRouteResponse(BaseModel):
     route_id: int | None = Field(
         default=None,
         description="ID snapshot rute aktif (untuk real-time navigation).")
+    start_source: str | None = Field(
+        default=None,
+        description="Sumber titik awal rute yang terpakai: `webhook` (posisi "
+                    "kurir dari Redis `driver:pos:{kurir_id}`), "
+                    "`courier_position` (payload), atau `hub_origin`.")
 
 
 class GeofenceCheckRequest(BaseModel):

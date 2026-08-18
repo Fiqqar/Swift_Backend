@@ -372,10 +372,19 @@ Ikuti pola test yang sudah ada:
 | 16| Cache stop belum terkirim `driver:stops:{id}` + invalidasi  | ✅ Ada  (`_get_stops` + `_invalidate_tracking_cache`) |
 | 17| Fallback chain titik awal (Redis → courier → hub)           | ✅ Ada  (`resolve_start_point`) |
 | 18| `/geofence-check` dipertahankan sebagai fallback            | ✅ Ada  |
+| 19| `start_source` di response optimasi (webhook/courier/hub)   | ✅ Ada  (`OptimizedDeliveryRouteResponse.start_source`) |
+| 20| Demo UI `delivery.html`: login kurir + stream WS posisi (webhook-first) + indikator `start_source` | ✅ Ada  (`app/ui/delivery.js`) |
 
 > Implementasi dasar selesai. Langkah 6 (dynamic rerouting memakai
 > `_MAX_OFF_ROUTE_M` + `app.state.active_route`) belum dikerjakan —
 > tetap menjadi fitur turunan.
+
+> **Demo UI (`/delivery.html`):** mendukung login kurir (`POST /auth/login`,
+> token di `localStorage`), tombol "Gunakan Lokasi Saya", dan toggle
+> "Stream posisi ke WS (webhook-first)" yang membuka `WS /api/v1/ws/driver/position`
+> untuk mengisi `driver:pos:{kurir_id}`. Saat optimize, titik awal mengikuti
+> prioritas backend (`webhook → courier_position → hub_origin`) dan sumbernya
+> ditampilkan via field `start_source` pada response.
 
 ## 11. Langkah Implementasi yang Disarankan
 
