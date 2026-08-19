@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import current_kurir_or_error, get_session
@@ -34,8 +35,11 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
     if not username or not payload.password:
         return err("Username dan password wajib diisi", 422)
 
-    result = await session.execute(select(Kurir).where(Kurir.username == username))
-    kurir = result.scalar_one_or_none()
+    try:
+        result = await session.execute(select(Kurir).where(Kurir.username == username))
+        kurir = result.scalar_one_or_none()
+    except (SQLAlchemyError, OSError):
+        return err("Database tidak tersedia, coba lagi nanti", 503)
     if kurir is None or not kurir.is_active or not kurir.password_hash:
         return err("Username atau password salah", 401)
     if not verify_password(payload.password, kurir.password_hash):
