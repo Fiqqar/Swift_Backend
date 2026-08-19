@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import SessionLocal
@@ -14,8 +15,14 @@ bearer_scheme = HTTPBearer(
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    async with SessionLocal() as session:
-        yield session
+    try:
+        async with SessionLocal() as session:
+            yield session
+    except (SQLAlchemyError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database tidak tersedia, coba lagi nanti",
+        ) from exc
 
 
 async def current_kurir(
