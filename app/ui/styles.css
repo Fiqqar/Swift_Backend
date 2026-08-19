@@ -95,3 +95,19 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 .toast .toast-title { font-weight: 700; }
 .toast .toast-sub { font-weight: 500; color: #5b6b7b; margin-top: 2px; }
 @keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* --- Responsive (layar kecil / HP / tablet) ---------------------------- */
+@media (max-width: 1024px) {
+  header { padding: 10px 14px; }
+  header h1 { font-size: 15px; }
+  .badges { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .badge { flex: 0 0 auto; }
+  main { flex-direction: column; height: auto; }
+  #map { width: 100%; flex: none; height: 45vh; min-height: 240px; }
+  #panel { width: 100%; max-width: none; border-left: 0; border-top: 1px solid #d7dde3; }
+  #route-sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 55vh; }
+  #toasts { left: 12px; }
+  .mode-row { flex-wrap: wrap; }
+  .mode-row label { font-size: 12px; padding: 9px 4px; }
+  #log { font-size: 11px; }
+}
