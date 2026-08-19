@@ -12,6 +12,14 @@
   var routePane = map.createPane('route');
   routePane.style.zIndex = 460;
 
+  function onViewportResize() { map.invalidateSize(); }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onViewportResize);
+    window.visualViewport.addEventListener('scroll', onViewportResize);
+  } else {
+    window.addEventListener('resize', onViewportResize);
+  }
+
   var sheetEl = document.getElementById('route-sheet');
   if (sheetEl) {
     L.DomEvent.disableClickPropagation(sheetEl);

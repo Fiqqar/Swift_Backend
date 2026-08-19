@@ -14,3 +14,10 @@
 .login-actions { display: flex; gap: 6px; }
 .login-actions .btn { flex: 1; white-space: nowrap; }
 #ws-status { margin-top: 6px; }
+
+/* --- Responsive (layar kecil / HP / tablet) ---------------------------- */
+@media (max-width: 1024px) {
+  #panel { width: 100%; max-width: none; border-left: 0; border-top: 1px solid #d7dde3; }
+  .login-fields { flex-direction: column; gap: 8px; }
+  .login-actions .btn { white-space: normal; }
+}
