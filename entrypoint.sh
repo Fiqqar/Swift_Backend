@@ -15,7 +15,7 @@ if [ -f "${TILES_SRC}/manifest.json" ]; then
 fi
 
 PBF_DIR="/app/data/pbf"
-PBF_FILE="${PBF_DIR}/map.osm.pbf"
+PBF_FILE="${PBF_DIR}/java-260805.osm.pbf"
 
 mkdir -p "${PBF_DIR}"
 
