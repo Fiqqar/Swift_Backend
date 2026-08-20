@@ -29,7 +29,7 @@ RUN maturin build --release && \
 
 COPY . .
 
-EXPOSE 8000
+EXPOSE ${PORT:-8000}
 
 COPY entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
