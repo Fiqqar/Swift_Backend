@@ -16,12 +16,9 @@ target/
 
 # Runtime caches, data, dan dokumentasi
 cache/
-data/
 docs/
 scripts/
 *.pkl
-*.osm
-*.osm.pbf
 
 # IDE / tooling
 .vscode/
