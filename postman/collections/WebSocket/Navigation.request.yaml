@@ -1,5 +1,4 @@
 $kind: websocket-request
-name: Navigation
 description: ""
 url: "{{baseUrl}}/api/v1/ws/navigation?token={{bearerToken}}"
 headers:

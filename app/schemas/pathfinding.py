@@ -1,12 +1,12 @@
 from datetime import datetime
-from typing import Annotated, List, Literal, Tuple
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
 from app.services.polyline import encode_polyline
 
 PolylineCoords = Annotated[
-    List[Tuple[float, float]],
+    list[tuple[float, float]],
     PlainSerializer(lambda v: encode_polyline(v, 5),
                     return_type=str, when_used="json"),
 ]
@@ -51,11 +51,30 @@ class RouteRequest(BaseModel):
         }]
     })
 
-
 class TrafficRouteSegment(BaseModel):
     start_index: int = Field(ge=0, description="Indeks awal segmen pada route_coordinates.")
     end_index: int = Field(ge=0, description="Indeks akhir segmen pada route_coordinates.")
     multiplier: float = Field(gt=0, description="Faktor pengali durasi segmen (>0).")
+
+
+class TurnInstruction(BaseModel):
+    distance_m: float = Field(description="Jarak dari posisi saat ini ke titik belok (meter).")
+    instruction: str = Field(description="Instruksi belok yang mudah dibaca (Bahasa Indonesia).")
+    type: Literal["turn_left", "turn_right", "turn_slight_left", "turn_slight_right",
+                  "continue", "roundabout_exit", "uturn", "arrive"] = Field(
+        description="Jenis manuver belok.")
+    street_name: str | None = Field(default=None, description="Nama jalan dari OSM tag 'name'.")
+    bearing_change: int = Field(description="Perubahan bearing dalam derajat (-180 s/d 180).")
+    road_class: str | None = Field(default=None, description="Kelas jalan OSM (highway tag).")
+    is_exit: bool = Field(default=False, description="Apakah ini keluar bundaran.")
+
+
+class RouteStep(BaseModel):
+    distance_m: float = Field(description="Panjang langkah ini (meter).")
+    duration_s: float = Field(description="Estimasi waktu langkah ini (detik).")
+    instruction: TurnInstruction = Field(description="Instruksi belok untuk langkah ini.")
+    coordinates: PolylineCoords = Field(default=[], description="Sub-polyline untuk langkah ini.")
+
 
 class RouteResponse(BaseModel):
     status: str
@@ -66,15 +85,16 @@ class RouteResponse(BaseModel):
     graph_radius_meters: int | None = None
     estimated_time_seconds: float | None = None
     estimated_arrival: datetime | None = None
-    traffic_segments: List[TrafficRouteSegment] = []
+    traffic_segments: list[TrafficRouteSegment] = []
     route_id: int | None = Field(
         default=None,
         description="ID snapshot rute aktif (untuk real-time navigation). "
                     "Ada bila live navigation / dynamic rerouting aktif.")
+    steps: list[RouteStep] = Field(default=[], description="Turn-by-turn navigasi langkah demi langkah.")
 
 class RouteIncident(BaseModel):
     type: Literal["road_closure", "congestion"]
-    location: Tuple[float, float]
+    location: tuple[float, float]
     coordinates: PolylineCoords = []
     multiplier: float = 1.0
     delay_minutes: float | None = None
@@ -91,13 +111,14 @@ class RouteOption(BaseModel):
     route_coordinates: PolylineCoords
     estimated_time_seconds: float | None = None
     estimated_arrival: datetime | None = None
-    traffic_segments: List[TrafficRouteSegment] = []
-    incidents: List[RouteIncident] = []
+    traffic_segments: list[TrafficRouteSegment] = []
+    incidents: list[RouteIncident] = []
+    steps: list[RouteStep] = Field(default=[], description="Turn-by-turn navigasi langkah demi langkah.")
 
 class RouteOptionsResponse(BaseModel):
     status: str
     total_route: int
-    routes: List[RouteOption]
+    routes: list[RouteOption]
     source: str = "demo"
     warning: str | None = None
     graph_radius_meters: int | None = None
@@ -144,7 +165,7 @@ class OptimizedDeliveryRouteRequest(BaseModel):
         description="Opsional. Posisi kurir saat ini — PRIORITAS KEDUA sebagai "
                     "titik awal rute (dipakai hanya bila posisi Redis webhook "
                     "tidak tersedia). Menggantikan `hub_origin` bila diberikan.")
-    deliveries: List[DeliveryStop] = Field(
+    deliveries: list[DeliveryStop] = Field(
         min_length=1,
         description="Wajib. Daftar stop pengantaran (minimal 1).")
     mode: VehicleMode | None = Field(
@@ -206,8 +227,9 @@ class OptimizedDeliveryLeg(BaseModel):
     distance_km: float
     duration_mins: float
     estimated_time_seconds: float | None = None
-    traffic_segments: List[TrafficRouteSegment] = []
-    incidents: List[RouteIncident] = []
+    traffic_segments: list[TrafficRouteSegment] = []
+    incidents: list[RouteIncident] = []
+    steps: list[RouteStep] = Field(default=[], description="Turn-by-turn navigasi untuk leg ini.")
 
 
 class OptimizedStop(BaseModel):
@@ -224,8 +246,8 @@ class OptimizedDeliveryRouteResponse(BaseModel):
     total_distance_km: float
     total_duration_mins: float
     total_legs: int
-    stops: List[OptimizedStop]
-    legs: List[OptimizedDeliveryLeg]
+    stops: list[OptimizedStop]
+    legs: list[OptimizedDeliveryLeg]
     source: str = "demo"
     warning: str | None = None
     route_id: int | None = Field(

@@ -9,6 +9,12 @@ from app.services.navigation import (
     point_to_polyline_distance_m,
     remaining_progress,
 )
+from app.services.pathfinding.maneuvers import (
+    extract_steps,
+    find_current_step,
+    get_next_maneuver,
+    get_traffic_level,
+)
 from app.services.polyline import encode_polyline
 
 ROUTE = [(-6.8048, 110.8385), (-6.8052, 110.8390), (-6.8100, 110.8500)]
@@ -204,3 +210,148 @@ def test_advance_leg_no_legs_returns_none():
     session.kind = "multi"
     assert advance_leg(session, {"route_id": 1, "kind": "multi",
                                  "legs": []}) is None
+
+
+# --- Maneuver extraction tests ---
+
+def _simple_route():
+    """Create a simple L-shaped route for testing."""
+    return [
+        (-6.8048, 110.8385),  # Start
+        (-6.8050, 110.8390),  # Straight
+        (-6.8052, 110.8395),  # Turn right
+        (-6.8055, 110.8398),  # Straight
+        (-6.8060, 110.8400),  # Turn left
+        (-6.8065, 110.8405),  # End
+    ]
+
+
+def _node_sequence_for_route(route_coords):
+    """Generate a simple node sequence for the route."""
+    return list(range(len(route_coords)))
+
+
+def test_extract_steps_straight_route():
+    """Test maneuver extraction for a straight route."""
+    route_coords = [(-6.8048, 110.8385), (-6.8050, 110.8390), (-6.8052, 110.8395)]
+    node_seq = [0, 1, 2]
+    edge_classes = {}
+    edge_names = {}
+
+    steps = extract_steps(node_seq, route_coords, edge_classes, edge_names)
+
+    assert len(steps) == 2
+    # Last step should be arrive
+    assert steps[-1]["instruction"]["type"] == "arrive"
+    assert steps[-1]["instruction"]["instruction"] == "Anda telah tiba di tujuan"
+
+
+def test_extract_steps_with_turns():
+    """Test maneuver extraction detects turns."""
+    route_coords = _simple_route()
+    node_seq = _node_sequence_for_route(route_coords)
+
+    # Create edge classes and names for each segment
+    edge_classes = {
+        1: "residential",   # 0->1
+        3: "residential",   # 1->2
+        6: "residential",   # 2->3
+        10: "residential",  # 3->4
+        15: "residential",  # 4->5
+    }
+    edge_names = {
+        1: "Jl. A",
+        3: "Jl. B",
+        6: "Jl. B",
+        10: "Jl. C",
+        15: "Jl. C",
+    }
+
+    steps = extract_steps(node_seq, route_coords, edge_classes, edge_names)
+
+    assert len(steps) >= 3
+    # Check that we have turn instructions (not just continue/arrive)
+    turn_types = [s["instruction"]["type"] for s in steps[:-1]]
+    assert any(t in ("turn_left", "turn_right", "turn_slight_left", "turn_slight_right") for t in turn_types)
+
+
+def test_extract_steps_empty_inputs():
+    """Test extract_steps handles empty inputs."""
+    assert extract_steps([], [], {}, {}) == []
+    assert extract_steps([0], [(-6.8, 110.8)], {}, {}) == []
+    assert extract_steps([0, 1], [], {}, {}) == []
+
+
+def test_find_current_step():
+    """Test finding current step based on traveled distance."""
+    route_coords = _simple_route()
+    node_seq = _node_sequence_for_route(route_coords)
+    edge_classes = {1: "residential", 3: "residential"}
+    edge_names = {1: "Jl. A", 3: "Jl. A"}
+
+    steps = extract_steps(node_seq, route_coords, edge_classes, edge_names)
+    total_dist = sum(s["distance_m"] for s in steps)
+
+    # At start
+    idx = find_current_step(steps, route_coords[0][0], route_coords[0][1], 0)
+    assert idx == 0
+
+    # At middle
+    idx = find_current_step(steps, route_coords[2][0], route_coords[2][1], total_dist / 2)
+    assert idx >= 0
+
+    # At end
+    idx = find_current_step(steps, route_coords[-1][0], route_coords[-1][1], total_dist)
+    assert idx == len(steps) - 1
+
+
+def test_get_next_maneuver():
+    """Test getting next maneuver."""
+    route_coords = _simple_route()
+    node_seq = _node_sequence_for_route(route_coords)
+    edge_classes = {1: "residential", 3: "residential"}
+    edge_names = {1: "Jl. A", 3: "Jl. A"}
+
+    steps = extract_steps(node_seq, route_coords, edge_classes, edge_names)
+
+    # First step
+    next_m = get_next_maneuver(steps, 0)
+    assert next_m is not None
+    assert "distance_m" in next_m
+
+    # Last step
+    next_m = get_next_maneuver(steps, len(steps) - 1)
+    assert next_m is None
+
+
+def test_get_traffic_level():
+    """Test traffic level classification."""
+    # Free flow
+    assert get_traffic_level({}, 1) == "free"
+    assert get_traffic_level({1: 1.0}, 1) == "free"
+    assert get_traffic_level({1: 1.2}, 1) == "free"
+
+    # Moderate
+    assert get_traffic_level({1: 1.5}, 1) == "moderate"
+    assert get_traffic_level({1: 2.0}, 1) == "moderate"
+
+    # Heavy
+    assert get_traffic_level({1: 2.5}, 1) == "heavy"
+    assert get_traffic_level({1: 3.0}, 1) == "heavy"
+    assert get_traffic_level({1: float("inf")}, 1) == "heavy"
+
+
+def test_remaining_progress_new_fields():
+    """Test remaining_progress returns new fields."""
+    session = NavSession(kurir_id=1)
+    session.coords = _simple_route()
+    session.last_position = {"lat": _simple_route()[0][0], "lon": _simple_route()[0][1], "speed": 30}
+
+    prog = remaining_progress(session, _simple_route()[0][0], _simple_route()[0][1])
+
+    assert prog is not None
+    assert "current_speed_kmh" in prog
+    assert "average_speed_kmh" in prog
+    assert "eta_timestamp" in prog
+    assert "traffic_level" in prog
+    assert prog["current_speed_kmh"] == 30.0

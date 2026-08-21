@@ -454,6 +454,81 @@
     $('nav-eta').textContent = data.remaining_time_s != null
       ? 'ETA ' + formatEta(data.remaining_time_s)
       : '-';
+
+    // NEW: Current speed
+    if (data.current_speed_kmh != null) {
+      $('nav-speed').textContent = Math.round(data.current_speed_kmh) + ' km/h';
+    }
+    // NEW: Average speed
+    if (data.average_speed_kmh != null) {
+      $('nav-avg-speed').textContent = 'Avg: ' + Math.round(data.average_speed_kmh) + ' km/h';
+    }
+    // NEW: Traffic level indicator
+    if (data.traffic_level != null) {
+      var trafficEl = $('nav-traffic');
+      if (trafficEl) {
+        trafficEl.textContent = data.traffic_level.charAt(0).toUpperCase() + data.traffic_level.slice(1);
+        trafficEl.className = 'nav-traffic ' + data.traffic_level;
+      }
+    }
+    // NEW: Next maneuver
+    if (data.next_maneuver != null) {
+      showNextManeuver(data.next_maneuver);
+    }
+  }
+
+  function showNextManeuver(maneuver) {
+    var panel = $('nav-maneuver');
+    var textEl = $('nav-maneuver-text');
+    var distEl = $('nav-maneuver-distance');
+    var iconEl = panel ? panel.querySelector('.nav-maneuver-icon') : null;
+
+    if (!panel || !textEl || !distEl) return;
+
+    panel.classList.add('show');
+    textEl.textContent = maneuver.instruction || 'Lurus';
+
+    var dist = maneuver.distance_m;
+    if (dist != null) {
+      distEl.textContent = dist >= 1000
+        ? (dist / 1000).toFixed(1) + ' km'
+        : Math.round(dist) + ' m';
+    } else {
+      distEl.textContent = '-';
+    }
+
+    // Set turn icon based on maneuver type
+    var iconHtml = '';
+    switch (maneuver.type) {
+      case 'turn_left':
+        iconHtml = '↰';
+        break;
+      case 'turn_right':
+        iconHtml = '↱';
+        break;
+      case 'turn_slight_left':
+        iconHtml = '↖';
+        break;
+      case 'turn_slight_right':
+        iconHtml = '↗';
+        break;
+      case 'continue':
+        iconHtml = '↑';
+        break;
+      case 'roundabout_exit':
+        iconHtml = '↻';
+        break;
+      case 'uturn':
+        iconHtml = '↺';
+        break;
+      case 'arrive':
+        iconHtml = '🏁';
+        break;
+      default:
+        iconHtml = '↑';
+    }
+    iconEl.innerHTML = iconHtml;
+    iconEl.style.fontSize = '20px';
   }
 
   function redrawNavPolyline(encoded) {
@@ -518,6 +593,10 @@
         return;
       }
       if (msg.type === 'route_progress') setNavProgress(msg);
+      if (msg.type === 'turn_by_turn') {
+        var maneuver = msg.maneuver;
+        if (maneuver) showNextManeuver(maneuver);
+      }
       if (msg.type === 'off_route_warning') {
         navInd('Di luar rute (' + Math.round(msg.distance_m) + ' m dari jalur)', 'offroute');
         pushToast('danger', 'Di luar rute',

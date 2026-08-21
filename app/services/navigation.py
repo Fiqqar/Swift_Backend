@@ -69,6 +69,17 @@ class NavSession:
         self.last_progress_push: float = 0.0
         self.lock = asyncio.Lock()
 
+        # NEW: Navigation enhancement fields
+        self.node_sequence: list[int] = []    # Current route node IDs
+        self.edge_classes: dict[int, str] = {}  # Highway type per edge
+        self.edge_names: dict[int, str] = {}    # Street names per edge
+        self.steps: list = []                 # Pre-computed turn steps
+        self.current_step_index: int = 0      # Current step in navigation
+        self.traveled_distance_m: float = 0.0 # Distance traveled from route start
+        self.current_package_id: int | None = None
+        self.current_recipient: str | None = None
+        self.total_legs: int = 1
+
 
 class NavRegistry:
     """Registry sesi navigation per kurir (1 koneksi/kurir)."""
@@ -119,8 +130,7 @@ def point_to_polyline_distance_m(lat: float, lon: float,
             t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
             qx, qy = ax + t * dx, ay + t * dy
             d2 = (px - qx) ** 2 + (py - qy) ** 2
-        if d2 < best:
-            best = d2
+        best = min(best, d2)
     return math.sqrt(best)
 
 
@@ -162,11 +172,65 @@ def remaining_progress(session: NavSession, lat: float,
     if speed_kmh <= 0:
         speed_kmh = 40.0
     remaining_time_s = remaining / (speed_kmh / 3.6)
-    return {
+
+    # NEW: Calculate traveled distance and average speed
+    traveled = total - remaining
+    session.traveled_distance_m = traveled
+
+    # Estimate average speed from start
+    avg_speed_kmh = speed_kmh
+    if session.last_position and "ts" in session.last_position:
+        # Could compute from start time, but we don't have it
+        avg_speed_kmh = speed_kmh
+
+    # NEW: Determine current step and next maneuver
+    from app.services.pathfinding.maneuvers import (
+        find_current_step,
+        get_next_maneuver,
+        get_traffic_level,
+    )
+
+    current_step_idx = find_current_step(session.steps, lat, lon, traveled)
+    session.current_step_index = current_step_idx
+    next_maneuver = get_next_maneuver(session.steps, current_step_idx)
+
+    # NEW: Traffic level on current edge
+    traffic_level = "free"
+    if (session.steps and current_step_idx < len(session.steps)
+            and session.node_sequence and current_step_idx < len(session.node_sequence) - 1):
+        u, v = session.node_sequence[current_step_idx], session.node_sequence[current_step_idx + 1]
+        from app.services.pathfinding.core_a_star import edge_id
+        eid = edge_id(u, v)
+        traffic_level = get_traffic_level({}, eid)  # penalties passed in future
+
+    # NEW: ETA timestamp
+    import time
+    eta_timestamp = int(time.time() + remaining_time_s)
+
+    result = {
         "remaining_distance_m": round(remaining, 1),
         "remaining_time_s": round(remaining_time_s, 1),
         "progress_pct": round(progress_pct, 1),
+        "current_speed_kmh": round(speed_kmh, 1),
+        "average_speed_kmh": round(avg_speed_kmh, 1),
+        "eta_timestamp": eta_timestamp,
+        "traffic_level": traffic_level,
     }
+
+    # NEW: Leg context for multi-stop
+    if session.kind == "multi":
+        result["leg_context"] = {
+            "package_id": session.current_package_id,
+            "recipient_name": session.current_recipient,
+            "stop_sequence": session.leg_index + 1,
+            "total_legs": session.total_legs,
+        }
+
+    # NEW: Next maneuver if available
+    if next_maneuver:
+        result["next_maneuver"] = next_maneuver
+
+    return result
 
 
 async def compute_reroute(app, redis, session: NavSession,
@@ -182,6 +246,8 @@ async def compute_reroute(app, redis, session: NavSession,
     `extra_penalties` (opsional): dict {edge_id: multiplier} yang di-merge
     (ambil max) ke penalti traffic — dipakai mis. laporan kurir (insiden jalan).
     """
+    from starlette.concurrency import run_in_threadpool
+
     from app.api.v1.endpoints.pathfinding import (
         _best_route,
         _normalize_mode,
@@ -189,7 +255,7 @@ async def compute_reroute(app, redis, session: NavSession,
     )
     from app.schemas.pathfinding import Coordinate, RouteRequest
     from app.services.pathfinding.graph_loader import AreaNotCoveredError
-    from starlette.concurrency import run_in_threadpool
+    from app.services.pathfinding.maneuvers import extract_steps
 
     dest = session.dest
     if dest is None:
@@ -240,7 +306,7 @@ async def compute_reroute(app, redis, session: NavSession,
                 traffic_penalties[eid] = max(
                     traffic_penalties.get(eid, 1.0), mult)
     try:
-        response, _node_sequence, _final_penalties, _m = await _best_route(
+        response, node_sequence, final_penalties, _m = await _best_route(
             app, plan, redis, traffic_penalties, leg_payload, mode,
             lat, lon, dest[0], dest[1],
             need_nodes=True, skip_traffic=not traffic)
@@ -249,6 +315,36 @@ async def compute_reroute(app, redis, session: NavSession,
         return None
     if response is None:
         return None
+
+    # NEW: Populate session with navigation data for turn-by-turn
+    if node_sequence:
+        session.node_sequence = node_sequence
+        # Get edge classes and names from the graph used
+        pg = plan[1]
+        if hasattr(pg, 'edge_classes'):
+            session.edge_classes = pg.edge_classes or {}
+        if hasattr(pg, 'edge_names'):
+            session.edge_names = pg.edge_names or {}
+        # Extract turn-by-turn steps
+        speed_kmh = 40.0
+        if session.last_position and session.last_position.get("speed"):
+            try:
+                speed_kmh = float(session.last_position["speed"])
+            except (TypeError, ValueError):
+                speed_kmh = 40.0
+        if speed_kmh <= 0:
+            speed_kmh = 40.0
+        session.steps = extract_steps(
+            node_sequence,
+            response.route_coordinates,
+            session.edge_classes,
+            session.edge_names,
+            speed_kmh,
+            final_penalties if traffic else None
+        )
+        session.current_step_index = 0
+        session.traveled_distance_m = 0.0
+
     return response
 
 
@@ -291,6 +387,17 @@ def advance_leg(session: NavSession, nav: dict) -> dict | None:
     session.off_route_active = False
     session.cooldown_until = 0.0
     session.last_progress_push = 0.0
+
+    # NEW: Reset navigation state for new leg
+    session.current_package_id = leg.get("package_id")
+    session.current_recipient = leg.get("recipient_name")
+    session.node_sequence = []
+    session.edge_classes = {}
+    session.edge_names = {}
+    session.steps = []
+    session.current_step_index = 0
+    session.traveled_distance_m = 0.0
+
     return {
         "leg_index": next_index,
         "package_id": leg.get("package_id"),

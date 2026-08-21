@@ -58,6 +58,9 @@ logger = logging.getLogger("pathfinding")
 _NAV_POS_MAX_RATE_SECONDS = float(
     os.environ.get("NAV_POS_MAX_RATE_SECONDS", "3"))
 
+_NAV_TURN_NOTIFY_DISTANCE_M = float(
+    os.environ.get("NAV_TURN_NOTIFY_DISTANCE_M", "150"))
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "").strip()
@@ -115,6 +118,20 @@ async def _apply_route(session: NavSession, nav: dict, leg_index: int) -> bool:
     session.total_distance_m = float(nav.get("total_distance_m", 0.0) or 0.0)
     session.total_eta_s = float(nav.get("total_eta_s", 0.0) or 0.0)
     session.off_route_active = False
+
+    # NEW: Leg context for multi-stop
+    session.current_package_id = leg.get("package_id")
+    session.current_recipient = leg.get("recipient_name")
+    session.total_legs = len(legs)
+
+    # Reset navigation state for new leg
+    session.traveled_distance_m = 0.0
+    session.current_step_index = 0
+    session.node_sequence = []
+    session.edge_classes = {}
+    session.edge_names = {}
+    session.steps = []
+
     return True
 
 
@@ -153,6 +170,9 @@ async def _handle_start_navigation(websocket: WebSocket, session: NavSession,
         "route_id": session.route_id,
         "leg_index": session.leg_index,
         "kind": session.kind,
+        "total_distance_m": session.total_distance_m,
+        "total_eta_s": session.total_eta_s,
+        "total_legs": session.total_legs,
         "off_route_threshold_m": OFF_ROUTE_THRESHOLD_M,
         "polyline": encode_polyline(session.coords, 5),
         "ts": int(time.time()),
@@ -215,6 +235,16 @@ async def _handle_location_update(websocket: WebSocket, app,
                 **prog,
             })
 
+            # NEW: Send turn_by_turn if approaching a maneuver
+            next_maneuver = prog.get("next_maneuver")
+            if next_maneuver and next_maneuver.get("distance_m", 0) <= _NAV_TURN_NOTIFY_DISTANCE_M:
+                await websocket.send_json({
+                    "type": "turn_by_turn", "ok": True,
+                    "route_id": session.route_id,
+                    "leg_index": session.leg_index,
+                    "maneuver": next_maneuver,
+                })
+
     if session.dest is None or len(session.coords) < 2:
         return
     dist = point_to_polyline_distance_m(lat, lon, session.coords)
@@ -273,6 +303,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                             else "reroute_available",
                             "ok": True,
                             "route_id": session.route_id,
+                            "leg_index": session.leg_index,
                             "polyline": encode_polyline(
                                 response.route_coordinates, 5),
                             "saving_s": round(
@@ -281,6 +312,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                             "eta_s": round(new_eta_s, 1),
                             "applied": AUTO_REROUTE,
                             "reason": "off_route",
+                            "steps": session.steps,
                         })
                     return
                 session.off_route_active = True
@@ -307,6 +339,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                     else "reroute_available",
                     "ok": True,
                     "route_id": session.route_id,
+                    "leg_index": session.leg_index,
                     "polyline": encode_polyline(
                         response.route_coordinates, 5),
                     "saving_s": round(
@@ -315,6 +348,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                     "eta_s": round(new_eta_s, 1),
                     "applied": AUTO_REROUTE,
                     "reason": "off_route",
+                    "steps": session.steps,
                 })
     else:
         session.off_route_active = False
@@ -357,6 +391,9 @@ async def _handle_complete_leg(websocket: WebSocket, session: NavSession,
         "dest": result.get("dest"),
         "polyline": result.get("polyline"),
         "off_route_threshold_m": OFF_ROUTE_THRESHOLD_M,
+        "total_distance_m": session.total_distance_m,
+        "total_eta_s": session.total_eta_s,
+        "total_legs": session.total_legs,
         "ts": int(time.time()),
     })
 
@@ -375,7 +412,9 @@ async def _handle_complete_leg(websocket: WebSocket, session: NavSession,
                 "- `auto_reroute`: apakah rute baru langsung diterapkan "
                 "(env `AUTO_REROUTE`).\n"
                 "- `max_rate_seconds`: batas interval pengiriman posisi "
-                "(env `NAV_POS_MAX_RATE_SECONDS`)."))
+                "(env `NAV_POS_MAX_RATE_SECONDS`).\n"
+                "- `turn_notify_distance_m`: jarak notifikasi belok "
+                "(env `NAV_TURN_NOTIFY_DISTANCE_M`)."))
 async def navigation_status(request: Request):
     redis = getattr(request.app.state, "redis", None)
     registry = getattr(request.app.state, "nav_registry", None)
@@ -393,6 +432,7 @@ async def navigation_status(request: Request):
         "reroute_cooldown_s": REROUTE_COOLDOWN_SECONDS,
         "auto_reroute": AUTO_REROUTE,
         "max_rate_seconds": _NAV_POS_MAX_RATE_SECONDS,
+        "turn_notify_distance_m": _NAV_TURN_NOTIFY_DISTANCE_M,
         "ai": {
             "enabled": bool(ai_agent.AI_REROUTE_ENABLED
                             and ai_agent.GEMINI_API_KEY),

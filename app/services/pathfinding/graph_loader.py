@@ -196,6 +196,7 @@ def _pbf_load_plan(lat: float, lon: float, dist_meters: int,
 _GRAPH_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _LOCATIONS_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _EDGE_CLASSES_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
+_EDGE_NAMES_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _SOURCE_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _WARNING_CACHE = _LRUDict(_GRAPH_CACHE_SIZE)
 _PG_CACHE = _LRUDict(_PG_CACHE_SIZE)
@@ -345,8 +346,8 @@ def load_osm_graph_by_point(lat: float, lon: float,
         if key in _GRAPH_CACHE:
             _perf("Disk Cache Check", t_cache)
             return (_GRAPH_CACHE[key], _LOCATIONS_CACHE[key],
-                    _EDGE_CLASSES_CACHE[key], _SOURCE_CACHE[key],
-                    _WARNING_CACHE[key])
+                    _EDGE_CLASSES_CACHE[key], _EDGE_NAMES_CACHE.get(key) or {},
+                    _SOURCE_CACHE[key], _WARNING_CACHE[key])
 
     path = _disk_path(key)
     if os.path.exists(path):
@@ -357,29 +358,31 @@ def load_osm_graph_by_point(lat: float, lon: float,
                 _GRAPH_CACHE[key] = data["graph"]
                 _LOCATIONS_CACHE[key] = data["locations"]
                 _EDGE_CLASSES_CACHE[key] = data.get("edge_classes") or {}
+                _EDGE_NAMES_CACHE[key] = data.get("edge_names") or {}
                 _SOURCE_CACHE[key] = data["source"]
                 _WARNING_CACHE[key] = data["warning"]
             _perf("Disk Cache Check", t_cache)
             return (data["graph"], data["locations"],
-                    data.get("edge_classes") or {}, data["source"],
-                    data["warning"])
+                    data.get("edge_classes") or {}, data.get("edge_names") or {},
+                    data["source"], data["warning"])
         except Exception as exc:
             logger.warning("Cache disk tidak terbaca: %s", exc)
 
     _perf("Disk Cache Check", t_cache)
-    graph, locations, edge_classes, source, warning = _load_raw(
+    graph, locations, edge_classes, edge_names, source, warning = _load_raw(
         lat, lon, dist_meters, origin, dest, level, rect, pbf)
 
     with _CACHE_LOCK:
         _GRAPH_CACHE[key] = graph
         _LOCATIONS_CACHE[key] = locations
         _EDGE_CLASSES_CACHE[key] = edge_classes
+        _EDGE_NAMES_CACHE[key] = edge_names
         _SOURCE_CACHE[key] = source
         _WARNING_CACHE[key] = warning
     _save_disk(path, {"graph": graph, "locations": locations,
-                      "edge_classes": edge_classes, "source": source,
-                      "warning": warning})
-    return graph, locations, edge_classes, source, warning
+                      "edge_classes": edge_classes, "edge_names": edge_names,
+                      "source": source, "warning": warning})
+    return graph, locations, edge_classes, edge_names, source, warning
 
 
 def _overpass_reachable(url: str, timeout: float = _PROBE_TIMEOUT) -> bool:
@@ -495,11 +498,13 @@ def load_graph_from_pbf(pbf_path: str,
 
     graph = {}
     edge_classes = {}
+    edge_names = {}
     for refs, tags in handler.ways:
         oneway = str(tags.get("oneway", "")).strip().lower()
         reversed_edge = oneway == "-1"
         one_way = oneway in ("yes", "true", "1", "-1")
         highway_class = tags.get("highway", "")
+        street_name = tags.get("name", "")
         for i in range(len(refs) - 1):
             a, b = refs[i], refs[i + 1]
             if a == b or a not in handler.nodes or b not in handler.nodes:
@@ -517,13 +522,18 @@ def load_graph_from_pbf(pbf_path: str,
                 edge_classes[edge_id(a, b)] = highway_class
                 if not one_way:
                     edge_classes[edge_id(b, a)] = highway_class
+            if street_name:
+                street_name = sys.intern(street_name)
+                edge_names[edge_id(a, b)] = street_name
+                if not one_way:
+                    edge_names[edge_id(b, a)] = street_name
 
     node_ids = set(graph)
     for neighbors in graph.values():
         node_ids.update(neighbors)
     locations = {nid: handler.nodes[nid]
                  for nid in node_ids if nid in handler.nodes}
-    return graph, locations, edge_classes
+    return graph, locations, edge_classes, edge_names
 
 
 def _load_raw(lat: float, lon: float, dist_meters: int,
@@ -539,11 +549,11 @@ def _load_raw(lat: float, lon: float, dist_meters: int,
         try:
             bbox = rect if rect is not None else _pbf_bbox(lat, lon, dist_meters)
             t_pbf = perf_counter()
-            graph, locations, edge_classes = load_graph_from_pbf(
+            graph, locations, edge_classes, edge_names = load_graph_from_pbf(
                 pbf.path, bbox, _LEVEL_HIGHWAYS[level])
             _perf("PBF Parse (Cold Start)", t_pbf)
             if graph and locations:
-                return (graph, locations, edge_classes,
+                return (graph, locations, edge_classes, edge_names,
                         f"pbf:{pbf.stem}", None)
             raise AreaNotCoveredError(
                 f"PBF {pbf.basename} tidak memiliki data jalan "
@@ -564,17 +574,17 @@ def _load_raw(lat: float, lon: float, dist_meters: int,
             warning = "Server OSM (Overpass) tidak terjangkau - cek koneksi internet"
         else:
             try:
-                graph, locations, edge_classes = _load_osm_graph(
+                graph, locations, edge_classes, edge_names = _load_osm_graph(
                     ox, lat, lon, dist_meters)
-                return graph, locations, edge_classes, "osm", None
+                return graph, locations, edge_classes, edge_names, "osm", None
             except Exception as exc:
                 warning = _friendly_osm_error(exc)
     else:
         warning = import_warning or "osmnx tidak terpasang di lingkungan ini"
 
-    graph, locations, edge_classes = _build_demo_grid(lat, lon, dist_meters)
+    graph, locations, edge_classes, edge_names = _build_demo_grid(lat, lon, dist_meters)
     warnings = [w for w in (warning, ) if w]
-    return graph, locations, edge_classes, "demo", "; ".join(warnings)
+    return graph, locations, edge_classes, edge_names, "demo", "; ".join(warnings)
 
 
 def load_path_graph(lat: float, lon: float, dist_meters: int = 3000,
@@ -608,12 +618,12 @@ def load_path_graph(lat: float, lon: float, dist_meters: int = 3000,
         except Exception as exc:
             logger.warning("Cache PathGraph tidak terbaca: %s", exc)
 
-    graph, locations, edge_classes, source, warning = load_osm_graph_by_point(
+    graph, locations, edge_classes, edge_names, source, warning = load_osm_graph_by_point(
         lat, lon, dist_meters, origin, dest, pbf, level=level)
     enable_ch = _ENABLE_CH if use_ch is None else use_ch
     t_build = perf_counter()
     pg = build_path_graph(graph, locations, lat, lon, enable_ch=enable_ch,
-                          edge_classes=edge_classes)
+                          edge_classes=edge_classes, edge_names=edge_names)
     _perf("PathGraph Build", t_build)
     pg.radius = int(dist_meters)
     pg.source = source
@@ -781,11 +791,13 @@ def _scan_tiles(tiles: list, bbox: tuple, level: int = 1):
     graph = {}
     locations = {}
     edge_classes = {}
-    for g, loc, ec in results:
+    edge_names = {}
+    for g, loc, ec, en in results:
         graph.update(g)
         locations.update(loc)
         edge_classes.update(ec)
-    return graph, locations, edge_classes
+        edge_names.update(en)
+    return graph, locations, edge_classes, edge_names
 
 
 def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
@@ -796,14 +808,14 @@ def _load_local_raw(lat: float, lon: float, radius: int, level: int = 1):
             "scripts/split_tiles.py terlebih dahulu.")
     box = _pbf_bbox(lat, lon, radius)
     t_tile = perf_counter()
-    graph, locations, edge_classes = _scan_tiles(tiles, box, level)
+    graph, locations, edge_classes, edge_names = _scan_tiles(tiles, box, level)
     _perf("Tile Scan", t_tile)
     if not graph:
         raise AreaNotCoveredError(
             "Tidak ada data jalan di tile sekitar titik yang diminta.")
     m = _tiles_manifest()
     stem = m["stem"] if m else "tile"
-    return graph, locations, edge_classes, f"tile:{stem}:l{level}", None
+    return graph, locations, edge_classes, edge_names, f"tile:{stem}:l{level}", None
 
 
 def load_local_graph_point(lat: float, lon: float,
@@ -834,11 +846,11 @@ def load_local_graph_point(lat: float, lon: float,
         except Exception as exc:
             logger.warning("Cache PathGraph lokal tidak terbaca: %s", exc)
 
-    graph, locations, edge_classes, source, warning = _load_local_raw(
+    graph, locations, edge_classes, edge_names, source, warning = _load_local_raw(
         lat, lon, radius, level)
     t_build = perf_counter()
     pg = build_path_graph(graph, locations, lat, lon, enable_ch=_ENABLE_CH,
-                          edge_classes=edge_classes)
+                          edge_classes=edge_classes, edge_names=edge_names)
     _perf("PathGraph Local Build", t_build)
     pg.radius = int(radius)
     pg.source = source
@@ -907,7 +919,7 @@ def load_local_graph_covering(lat1: float, lon1: float,
     graph = {}
     locations = {}
     t_tile = perf_counter()
-    graph, locations, edge_classes = _scan_tiles(tiles, load_rect, level)
+    graph, locations, edge_classes, edge_names = _scan_tiles(tiles, load_rect, level)
     _perf("Tile Scan (cover)", t_tile)
     if not graph:
         raise AreaNotCoveredError(
@@ -916,7 +928,7 @@ def load_local_graph_covering(lat1: float, lon1: float,
     t_build = perf_counter()
     pg = build_path_graph(graph, locations, mid_lat, mid_lon,
                           landmarks_k=0, enable_ch=False,
-                          edge_classes=edge_classes)
+                          edge_classes=edge_classes, edge_names=edge_names)
     _perf("PathGraph Local Cover Build", t_build)
     pg.radius = int(radius)
     pg.source = "tile:%s:l%d:cover" % (m["stem"], level)
@@ -1023,6 +1035,7 @@ def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):
     locations = {node_id: (data['y'], data['x']) for node_id, data in G.nodes(data=True)}
     graph = {node_id: {} for node_id in G.nodes}
     edge_classes = {}
+    edge_names = {}
 
     for u, v, data in G.edges(data=True):
         length = data.get('length', 1.0)
@@ -1040,7 +1053,16 @@ def _load_osm_graph(ox, lat: float, lon: float, dist_meters: int):
             if not data.get('oneway', False):
                 edge_classes[edge_id(v, u)] = highway_class
 
-    return graph, locations, edge_classes
+        street_name = data.get('name')
+        if isinstance(street_name, (list, tuple)):
+            street_name = street_name[0] if street_name else ""
+        if street_name:
+            street_name = sys.intern(street_name)
+            edge_names[edge_id(u, v)] = street_name
+            if not data.get('oneway', False):
+                edge_names[edge_id(v, u)] = street_name
+
+    return graph, locations, edge_classes, edge_names
 
 
 def _build_demo_grid(lat: float, lon: float, dist_meters: int,
@@ -1048,6 +1070,7 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
     locations = {}
     graph = {}
     edge_classes = {}
+    edge_names = {}
 
     lat_span = dist_meters / 111320.0
     lon_span = dist_meters / (111320.0 * max(0.1, math.cos(math.radians(lat))))
@@ -1073,6 +1096,8 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
                 graph[other][nid] = d
                 edge_classes[edge_id(nid, other)] = "residential"
                 edge_classes[edge_id(other, nid)] = "residential"
+                edge_names[edge_id(nid, other)] = f"Jalan Demo {r}-{c}"
+                edge_names[edge_id(other, nid)] = f"Jalan Demo {r}-{c}"
             if r + 1 < rows:
                 other = node_id(r + 1, c)
                 d = haversine_distance(locations[nid], locations[other])
@@ -1080,8 +1105,10 @@ def _build_demo_grid(lat: float, lon: float, dist_meters: int,
                 graph[other][nid] = d
                 edge_classes[edge_id(nid, other)] = "residential"
                 edge_classes[edge_id(other, nid)] = "residential"
+                edge_names[edge_id(nid, other)] = f"Jalan Demo {r}-{c}"
+                edge_names[edge_id(other, nid)] = f"Jalan Demo {r}-{c}"
 
-    return graph, locations, edge_classes
+    return graph, locations, edge_classes, edge_names
 
 
 _LOC_BUCKET = 1.0 / 1000.0
