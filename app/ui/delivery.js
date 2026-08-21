@@ -112,18 +112,11 @@
 
   function placeHub(latlng) {
     hub = [latlng.lat, latlng.lng];
-    curPos = hub;
     if (hubMarker) map.removeLayer(hubMarker);
     hubMarker = L.marker(latlng, {
       icon: numberedIcon('H', iconColors.hub)
     }).addTo(map).bindTooltip('Hub').openTooltip();
-    if (posMarker) map.removeLayer(posMarker);
-    posMarker = L.marker(latlng, {
-      icon: L.divIcon({
-        html: '<div style="background:#0f6dc1;border:2px solid #fff;border-radius:50%;width:14px;height:14px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>',
-        className: '', iconSize: [14, 14], iconAnchor: [7, 7]
-      })
-    }).addTo(map).bindTooltip('Posisi kurir');
+    // Jangan buat posMarker di hub - posMarker hanya untuk posisi kurir real (dari geolokasi/WS)
     $('txt-hub').textContent = fmt(hub);
     $('txt-pos').textContent = fmt(curPos);
     updateOptimizeBtn();
@@ -212,6 +205,26 @@
     }
   }
 
+  function sendPositionNow() {
+    if (!curPos) {
+      showNotice('Belum ada posisi kurir. Klik "Gunakan Lokasi Saya" atau klik peta (mode deviasi).');
+      return;
+    }
+    if (posWs && posWs.readyState === WebSocket.OPEN) {
+      posWs.send(JSON.stringify({ type: 'position', lat: curPos[0], lon: curPos[1] }));
+      log('Posisi dikirim manual ke WS: ' + fmt(curPos));
+    } else {
+      showNotice('WS posisi tidak terhubung. Aktifkan streaming dulu atau login.');
+    }
+  }
+
+  function updateSendPosBtn() {
+    var btn = $('btn-send-pos');
+    if (btn) {
+      btn.disabled = !(curPos && posWs && posWs.readyState === WebSocket.OPEN);
+    }
+  }
+
   function setCourierPosition(lat, lon, opts) {
     var dev = !!(opts && opts.deviate);
     var size = dev ? 16 : 14;
@@ -230,6 +243,7 @@
     $('txt-pos').textContent = fmt(curPos);
     sendPositionToWs(lat, lon);
     updateOptimizeBtn();
+    updateSendPosBtn();
   }
 
   function stopPositionStream() {
@@ -242,6 +256,7 @@
     $('chk-stream').checked = false;
     $('ws-status').textContent = 'WS posisi: nonaktif';
     $('ws-status').style.color = '';
+    updateSendPosBtn();
   }
 
   function startPositionStream() {
@@ -263,6 +278,7 @@
       '/api/v1/ws/driver/position?token=' + encodeURIComponent(auth.token));
     posWs.onopen = function () {
       $('ws-status').textContent = 'WS posisi: terhubung (posisi dari geolokasi dikirim)';
+      updateSendPosBtn();
     };
     posWs.onmessage = function (evt) {
       var msg;
@@ -832,10 +848,21 @@
   $('btn-logout').addEventListener('click', doLogout);
   $('btn-geo').addEventListener('click', function () {
     if (!navigator.geolocation) { log('ERROR: geolocation tidak didukung browser.'); return; }
-    log('Mengambil lokasi...');
+    log('Mengambil lokasi realtime...');
     navigator.geolocation.getCurrentPosition(function (pos) {
-      setCourierPosition(pos.coords.latitude, pos.coords.longitude);
-      log('Posisi kurir: ' + fmt(curPos) + ' (±' + Math.round(pos.coords.accuracy) + ' m)');
+      var lat = pos.coords.latitude;
+      var lon = pos.coords.longitude;
+      // Set sebagai posisi kurir (kirim ke WS jika terhubung via setCourierPosition)
+      setCourierPosition(lat, lon);
+      // Set sebagai hub/titik awal
+      hub = [lat, lon];
+      if (hubMarker) map.removeLayer(hubMarker);
+      hubMarker = L.marker([lat, lon], {
+        icon: numberedIcon('H', iconColors.hub)
+      }).addTo(map).bindTooltip('Hub (dari GPS)').openTooltip();
+      $('txt-hub').textContent = fmt(hub);
+      updateOptimizeBtn();
+      log('Hub & posisi kurir diset ke: ' + fmt([lat, lon]) + ' (±' + Math.round(pos.coords.accuracy) + ' m)');
     }, function (err) {
       log('ERROR lokasi (' + err.code + '): ' + err.message);
     }, { enableHighAccuracy: true, timeout: 15000 });
@@ -845,6 +872,8 @@
     if (this.checked) startPositionStream();
     else stopPositionStream();
   });
+
+  $('btn-send-pos').addEventListener('click', sendPositionNow);
 
   $('btn-optimize').addEventListener('click', runOptimize);
   $('btn-recalc').addEventListener('click', runRecalc);
