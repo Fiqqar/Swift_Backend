@@ -1,6 +1,9 @@
 import os
 
+from dotenv import load_dotenv
 from sqlalchemy import text
+
+load_dotenv()
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
