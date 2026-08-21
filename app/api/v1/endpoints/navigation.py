@@ -91,15 +91,19 @@ async def _apply_route(session: NavSession, nav: dict, leg_index: int) -> bool:
     """Set polyline aktif + dest dari snapshot nav (single/multi)."""
     legs = nav.get("legs") or []
     if not legs:
+        logger.warning("[NAV] _apply_route: legs kosong (route_id=%s)", nav.get("route_id"))
         return False
     leg_index = max(0, min(leg_index, len(legs) - 1))
     leg = legs[leg_index]
     from app.services.polyline import decode_polyline
     coords = decode_polyline(leg.get("encoded") or "")
     if len(coords) < 2:
+        logger.warning("[NAV] _apply_route: coords < 2 (leg_index=%s, encoded_len=%s)",
+                       leg_index, len(leg.get("encoded") or ""))
         return False
     dest = leg.get("dest")
     if dest is None:
+        logger.warning("[NAV] _apply_route: dest is None (leg_index=%s)", leg_index)
         return False
     session.route_id = nav.get("route_id")
     session.kind = nav.get("kind", "single")
@@ -123,13 +127,23 @@ async def _handle_start_navigation(websocket: WebSocket, session: NavSession,
         return
     leg_index = int(msg.get("leg_index", 0) or 0)
     nav = await get_nav_route(redis, session.kurir_id)
-    if nav is None or nav.get("route_id") != route_id:
+    if nav is None:
+        logger.warning("[NAV] Kurir %s: snapshot rute tidak ditemukan di Redis (route_id=%s, key=driver:nav:%s)",
+                       session.kurir_id, route_id, session.kurir_id)
         await websocket.send_json({
             "type": "error", "ok": False,
-            "detail": "Route snapshot tidak ditemukan / tidak cocok. "
-                      "Hitung ulang rute via API terlebih dahulu."})
+            "detail": "Route snapshot tidak ditemukan. Hitung ulang rute via API terlebih dahulu."})
+        return
+    if nav.get("route_id") != route_id:
+        logger.warning("[NAV] Kurir %s: route_id mismatch (client=%s, redis=%s)",
+                       session.kurir_id, route_id, nav.get("route_id"))
+        await websocket.send_json({
+            "type": "error", "ok": False,
+            "detail": "Route snapshot tidak cocok. Hitung ulang rute via API terlebih dahulu."})
         return
     if not await _apply_route(session, nav, leg_index):
+        logger.warning("[NAV] Kurir %s: _apply_route gagal (leg_index=%s, legs=%s)",
+                       session.kurir_id, leg_index, len(nav.get("legs") or []))
         await websocket.send_json({
             "type": "error", "ok": False,
             "detail": "Polyline leg tidak valid pada snapshot."})
@@ -165,6 +179,21 @@ async def _handle_location_update(websocket: WebSocket, app,
         await websocket.send_json({
             "type": "error", "ok": False,
             "detail": "Koordinat di luar rentang"})
+        return
+
+    # Validasi current_route_id agar client tidak kirim posisi untuk rute yang salah
+    current_route_id = msg.get("current_route_id")
+    if current_route_id is not None:
+        try:
+            current_route_id = int(current_route_id)
+        except (TypeError, ValueError):
+            current_route_id = None
+    if current_route_id is not None and current_route_id != session.route_id:
+        await websocket.send_json({
+            "type": "error", "ok": False,
+            "detail": f"current_route_id tidak cocok: client={current_route_id}, server={session.route_id}"})
+        logger.warning("[NAV] Kurir %s kirim current_route_id mismatch: client=%s, server=%s",
+                       session.kurir_id, current_route_id, session.route_id)
         return
 
     await set_kurir_position(
@@ -349,9 +378,17 @@ async def _handle_complete_leg(websocket: WebSocket, session: NavSession,
                 "(env `NAV_POS_MAX_RATE_SECONDS`)."))
 async def navigation_status(request: Request):
     redis = getattr(request.app.state, "redis", None)
+    registry = getattr(request.app.state, "nav_registry", None)
+    active_sessions = 0
+    if registry is not None:
+        try:
+            active_sessions = len(await registry.all())
+        except Exception:
+            pass
     return {
         "enabled": _live_navigation_enabled(),
         "redis_connected": redis is not None,
+        "active_sessions": active_sessions,
         "off_route_threshold_m": OFF_ROUTE_THRESHOLD_M,
         "reroute_cooldown_s": REROUTE_COOLDOWN_SECONDS,
         "auto_reroute": AUTO_REROUTE,

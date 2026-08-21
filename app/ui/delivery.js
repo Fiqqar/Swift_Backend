@@ -94,6 +94,7 @@
   var navWs = null, navRouteId = null, navSimTimer = null, navSimIdx = 0;
   var navRouteCoords = null, navRouteLayer = null, navStatus = { enabled: false };
   var navData = null;
+  var navConnecting = false;
   var auth = { token: localStorage.getItem('delivery_token') || '', kurir: null };
   var posWs = null, geoWatchId = null, webhookActive = false;
 
@@ -441,6 +442,8 @@
       card.textContent = 'Rute selesai.';
       $('btn-deliver').disabled = true;
       $('btn-recalc').disabled = true;
+      $('btn-nav-start').disabled = true;
+      navInd('Navigasi: selesai');
       return;
     }
     var s = data.stops[activeIndex];
@@ -450,8 +453,13 @@
       + (leg.distance_km != null ? leg.distance_km + ' km' : '-') + ' · '
       + (leg.duration_mins != null ? leg.duration_mins + ' mnt' : '-') + '</div>'
       + '<div class="coords">' + s.latitude.toFixed(5) + ', ' + s.longitude.toFixed(5) + '</div>';
-    $('btn-deliver').disabled = false;
+    $('btn-deliver').disabled = true;
     $('btn-recalc').disabled = !(deviating && curPos);
+    $('btn-nav-start').disabled = !(navRouteId && navStatus.enabled);
+    navInd(navRouteId
+      ? (navStatus.enabled ? 'Navigasi: siap (leg ' + (activeIndex + 1) + ')' : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)')
+      : 'Navigasi: nonaktif (server tidak set route_id)');
+    checkGeofence(s);
   }
 
   /* --- Real-time navigation (WS /api/v1/ws/navigation) ------------------ */
@@ -499,18 +507,27 @@
     if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
     if (navWs) { try { navWs.close(); } catch (e) {} navWs = null; }
     if (navRouteLayer) { map.removeLayer(navRouteLayer); navRouteLayer = null; }
-    navRouteId = null; navRouteCoords = null; navSimIdx = 0;
+    // JANGAN reset navRouteId & navRouteCoords di sini - biarkan sampai ack/error diterima
+    navSimIdx = 0;
+    navConnecting = false;
     $('btn-nav-start').textContent = 'Mulai Navigasi (Leg Aktif)';
-    $('btn-nav-start').disabled = true;
+    $('btn-nav-start').disabled = !(navRouteId && navStatus.enabled);
     $('btn-nav-apply').style.display = 'none';
     $('nav-progress-wrap').style.display = 'none';
     $('nav-progress-fill').style.width = '0%';
-    navInd(navStatus.enabled ? 'Navigasi: nonaktif' : 'Navigasi: nonaktif');
+    navInd(navStatus.enabled ? 'Navigasi: siap' : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)');
   }
 
   function startNavigation() {
-    if (!navRouteId) return;
-    stopNavigation();
+    if (!navRouteId || navConnecting) return;
+    // Hentikan navigasi lama kalau ada, tapi jangan reset navRouteId
+    if (navSimTimer || (navWs && navWs.readyState === WebSocket.OPEN)) {
+      if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
+      if (navWs) { try { navWs.close(); } catch (e) {} navWs = null; }
+      if (navRouteLayer) { map.removeLayer(navRouteLayer); navRouteLayer = null; }
+      navSimIdx = 0;
+    }
+    navConnecting = true;
     navInd('Navigasi: menghubungkan...');
     var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
     navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation');
@@ -521,15 +538,22 @@
       var msg;
       try { msg = JSON.parse(evt.data); } catch (e) { return; }
       if (msg.type === 'error') {
+        navConnecting = false;
         navInd('Navigasi: error (' + msg.detail + ')', 'warn');
         log('NAV error: ' + msg.detail);
+        // JANGAN panggil stopNavigation() - biarkan navRouteId tetap ada
+        // User bisa klik tombol lagi untuk retry
+        $('btn-nav-start').textContent = 'Mulai Navigasi (Leg Aktif)';
+        $('btn-nav-start').disabled = false;
         return;
       }
       if (msg.type === 'ack' && msg.route_id != null) {
+        navConnecting = false;
         navInd('Navigasi: leg ' + (msg.leg_index + 1) + ' aktif', 'active');
         navRouteCoords = decodePolyline(msg.polyline || '');
         navSimIdx = 0;
         $('btn-nav-start').textContent = 'Berhenti Navigasi';
+        $('btn-nav-start').disabled = false;
         if (navSimTimer) clearInterval(navSimTimer);
         navSimulate();
         navSimTimer = setInterval(navSimulate, 4000);
@@ -554,14 +578,25 @@
     };
     navWs.onclose = function () {
       if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
-      navInd('Navigasi: nonaktif');
+      if (navConnecting) {
+        // Koneksi tertutup saat masih connecting = gagal connect
+        navConnecting = false;
+        navInd('Navigasi: gagal terhubung ke server', 'warn');
+        log('NAV: koneksi tertutup saat connecting');
+        $('btn-nav-start').textContent = 'Mulai Navigasi (Leg Aktif)';
+        $('btn-nav-start').disabled = false;
+      } else {
+        navInd('Navigasi: nonaktif');
+      }
     };
     navWs.onerror = function () {
+      navConnecting = false;
       navInd('Navigasi: koneksi gagal', 'warn');
     };
   }
 
   $('btn-nav-start').addEventListener('click', function () {
+    if (navConnecting) return; // Prevent double-click while connecting
     if (navSimTimer || (navWs && navWs.readyState === WebSocket.OPEN)) {
       stopNavigation();
     } else {
@@ -684,33 +719,6 @@
       el.textContent = 'Geofence gagal: ' + ((err && err.message) ? err.message : String(err));
       el.style.color = '#b3372f';
     }
-  }
-
-  function renderNav(data) {
-    $('nav-controls').style.display = 'block';
-    var card = $('nav-card');
-    var leg = data.legs[activeIndex];
-    if (activeIndex >= data.stops.length) {
-      $('nav-status').textContent = 'Semua paket terkirim ✅';
-      card.textContent = 'Rute selesai.';
-      $('btn-deliver').disabled = true;
-      $('btn-recalc').disabled = true;
-      return;
-    }
-    var s = data.stops[activeIndex];
-    $('nav-status').textContent = 'Stop ' + (activeIndex + 1) + ' / ' + data.stops.length;
-    card.innerHTML = '<b>' + (s.recipient_name || ('Paket ' + (s.package_id || s.stop_order))) + '</b>'
-      + '<div>' + (s.service_type || '') + ' · '
-      + (leg.distance_km != null ? leg.distance_km + ' km' : '-') + ' · '
-      + (leg.duration_mins != null ? leg.duration_mins + ' mnt' : '-') + '</div>'
-      + '<div class="coords">' + s.latitude.toFixed(5) + ', ' + s.longitude.toFixed(5) + '</div>';
-    $('btn-deliver').disabled = true;
-    $('btn-recalc').disabled = !(deviating && curPos);
-    $('btn-nav-start').disabled = !(navRouteId && navStatus.enabled);
-    navInd(navRouteId
-      ? (navStatus.enabled ? 'Navigasi: siap (leg ' + (activeIndex + 1) + ')' : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)')
-      : 'Navigasi: nonaktif (server tidak set route_id)');
-    checkGeofence(s);
   }
 
   function normalizeData(data, isRecalc) {
