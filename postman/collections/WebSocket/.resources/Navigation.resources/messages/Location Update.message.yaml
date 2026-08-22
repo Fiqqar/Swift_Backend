@@ -1,4 +1,18 @@
 $kind: websocket-message
-content: ""
-contentType: text
+content: "{\r
+
+  \    \"type\": \"location_update\",\r
+
+  \    \"lat\": -6.8060,\r
+
+  \    \"lng\": 110.8390,\r
+
+  \    \"bearing\": 90,\r
+
+  \    \"speed\": 20,\r
+
+  \    \"current_route_id\": 5\r
+
+  }"
+contentType: json
 order: 495980021565767

@@ -4,6 +4,7 @@ import math
 from typing import TypedDict
 
 from app.services.pathfinding.core_a_star import edge_id, haversine_distance
+from app.services.polyline import encode_polyline
 
 
 class TurnInstruction(TypedDict):
@@ -20,7 +21,7 @@ class RouteStep(TypedDict):
     distance_m: float
     duration_s: float
     instruction: TurnInstruction
-    coordinates: list[tuple[float, float]]
+    polyline: str
 
 
 _TURN_TYPES = {
@@ -212,11 +213,13 @@ def extract_steps(node_sequence: list[int],
         if coord_idx + 2 < len(route_coords):
             step_coords.append(route_coords[coord_idx + 2])
 
+        step_polyline = encode_polyline(step_coords, 5)
+
         steps.append({
             "distance_m": round(seg_dist, 1),
             "duration_s": round(seg_time, 1),
             "instruction": instruction,
-            "coordinates": step_coords,
+            "polyline": step_polyline,
         })
 
         coord_idx += 1
