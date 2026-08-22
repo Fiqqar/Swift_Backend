@@ -1,6 +1,6 @@
 import asyncio
-import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -14,6 +14,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.api.v1.router import api_router
+from app.core.logging import CorrelationIdMiddleware, setup_logging
+from app.core.metrics import METRICS_ENABLED, metrics_endpoint, record_http_request
+
+# Configure logging FIRST, before any other imports that might log
+setup_logging()
+import logging
 
 _DEFAULT_WARMUP_PAIRS = [(-6.8048, 110.8385, -6.8100, 110.8500)]
 
@@ -88,11 +94,16 @@ def _prewarm_cities() -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.core.logging import get_logger
     from app.services.pathfinding.graph_loader import (
         REGION_LEVEL,
         load_graph_covering,
         region_graph_cached,
     )
+
+    logger = get_logger("system")
+    logger.info("system.startup", version="1.0.0", env=os.environ.get("APP_ENV", "development"))
+
     warmup_task = None
     pairs = _warmup_pairs()
     if pairs:
@@ -102,29 +113,22 @@ async def lifespan(app: FastAPI):
                 pg = await asyncio.to_thread(
                     load_graph_covering, lat1, lon1, lat2, lon2)
                 app.state.path_graph = pg
-                logging.getLogger("app").info(
-                    "[STARTUP] Pre-loaded path graph into RAM successfully "
-                    "(source=%s, radius=%s).", pg.source, pg.radius)
+                logger.info("graph.loaded", source=pg.source, radius=pg.radius, nodes=len(pg.graph), edges=sum(len(v) for v in pg.graph.values()))
             except Exception as exc:
-                logging.getLogger("app").warning(
-                    "[STARTUP] Pre-load path graph gagal: %s", exc)
+                logger.warning("graph.load_failed", error=str(exc))
                 app.state.path_graph = None
         else:
             app.state.path_graph = None
-            logging.getLogger("app").info(
-                "[STARTUP] Graf kecil warm-up belum di-cache, dilewati "
-                "(region graph mencakup area ini).")
+            logger.info("warmup.skipped", reason="region_graph_covers_area")
 
         if len(pairs) > 1:
             async def _warmup_remaining(rest):
                 for pair in rest:
                     try:
                         await asyncio.to_thread(load_graph_covering, *pair)
-                        logging.getLogger("app").info(
-                            "[STARTUP] Warm-up %s selesai.", pair)
+                        logger.info("warmup.complete", pair=pair)
                     except Exception as exc:
-                        logging.getLogger("app").warning(
-                            "[STARTUP] Warm-up %s gagal: %s", pair, exc)
+                        logger.warning("warmup.failed", pair=pair, error=str(exc))
             warmup_task = asyncio.create_task(_warmup_remaining(pairs[1:]))
     else:
         app.state.path_graph = None
@@ -141,12 +145,9 @@ async def lifespan(app: FastAPI):
             for lat, lon in items:
                 try:
                     await asyncio.to_thread(load_local_graph_point, lat, lon)
-                    logging.getLogger("app").info(
-                        "[STARTUP] Prewarm kota (%.4f,%.4f) selesai.", lat, lon)
+                    logger.info("prewarm.city_graph.loaded", lat=lat, lon=lon)
                 except Exception as exc:
-                    logging.getLogger("app").warning(
-                        "[STARTUP] Prewarm kota (%.4f,%.4f) gagal: %s",
-                        lat, lon, exc)
+                    logger.warning("prewarm.city_graph.failed", lat=lat, lon=lon, error=str(exc))
         city_task = asyncio.create_task(_prewarm_city_graphs(cities))
 
         from app.services.pathfinding.graph_loader import (
@@ -164,13 +165,9 @@ async def lifespan(app: FastAPI):
                         await asyncio.to_thread(
                             load_local_graph_covering, lat, lon,
                             lat + dlat, lon + dlon, level=1)
-                        logging.getLogger("app").info(
-                            "[STARTUP] Prewarm cover (%.4f,%.4f) cell "
-                            "(%.3f,%.3f) selesai.", lat, lon, dlat, dlon)
+                        logger.info("prewarm.cover.loaded", lat=lat, lon=lon, dlat=dlat, dlon=dlon)
                     except Exception as exc:
-                        logging.getLogger("app").warning(
-                            "[STARTUP] Prewarm cover (%.4f,%.4f) cell "
-                            "(%.3f,%.3f) gagal: %s", lat, lon, dlat, dlon, exc)
+                        logger.warning("prewarm.cover.failed", lat=lat, lon=lon, dlat=dlat, dlon=dlon, error=str(exc))
 
         if _cov_off > 0 and _cov_n > 0:
             cover_task = asyncio.create_task(_prewarm_cover_cells(cities))
@@ -185,23 +182,16 @@ async def lifespan(app: FastAPI):
             rg = await asyncio.to_thread(
                 load_graph_covering, lat1, lon1, lat2, lon2, REGION_LEVEL)
             app.state.region_graph = rg
-            logging.getLogger("app").info(
-                "[STARTUP] Region graph loaded (source=%s, radius=%s).",
-                rg.source, rg.radius)
+            logger.info("graph.region.loaded", source=rg.source, radius=rg.radius, nodes=len(rg.graph), edges=sum(len(v) for v in rg.graph.values()))
 
         if region_graph_cached(lat1, lon1, lat2, lon2, REGION_LEVEL):
             try:
                 await _load_region()
             except Exception as exc:
-                logging.getLogger("app").warning(
-                    "[STARTUP] Gagal memuat region graph dari cache, "
-                    "dilanjutkan di background: %s", exc)
+                logger.warning("graph.region.load_failed", error=str(exc))
                 region_task = asyncio.create_task(_load_region())
         else:
-            logging.getLogger("app").info(
-                "[STARTUP] Region graph belum ada di cache, dimuat di "
-                "background (jalankan scripts/prebuild_region.py untuk "
-                "pre-build).")
+            logger.info("graph.region.cache_miss", reason="run_prebuild_region")
             region_task = asyncio.create_task(_load_region())
 
     base_task = None
@@ -209,16 +199,16 @@ async def lifespan(app: FastAPI):
     if base_available():
         async def _load_base():
             await asyncio.to_thread(load_base_graph)
-            logging.getLogger("app").info("[STARTUP] Base graph loaded.")
+            logger.info("graph.base.loaded")
         base_task = asyncio.create_task(_load_base())
 
     from app.core.database import SessionLocal, dispose_db, init_db
     try:
         await init_db()
         app.state.sessionmaker = SessionLocal
+        logger.info("db.connected")
     except Exception as exc:
-        logging.getLogger("app").warning(
-            "Inisialisasi database gagal, app tetap berjalan: %s", exc)
+        logger.warning("db.init_failed", error=str(exc))
 
     from app.core.redis import close_redis, get_redis
     redis_client = None
@@ -226,10 +216,10 @@ async def lifespan(app: FastAPI):
         redis_client = get_redis()
         await redis_client.ping()
         app.state.redis = redis_client
+        logger.info("redis.connected")
     except Exception as exc:
         app.state.redis = None
-        logging.getLogger("app").warning(
-            "Redis tidak tersedia, cache rute dinonaktifkan: %s", exc)
+        logger.warning("redis.unavailable", error=str(exc))
 
     traffic_task = None
     if redis_client is not None:
@@ -240,6 +230,7 @@ async def lifespan(app: FastAPI):
         if should_start_poller():
             traffic_task = asyncio.create_task(traffic_poller(app, redis_client))
             app.state.traffic_task = traffic_task
+            logger.info("traffic.poller.started")
 
     nav_task = None
     from app.services.navigation import NavRegistry, navigation_worker
@@ -247,12 +238,14 @@ async def lifespan(app: FastAPI):
     if os.environ.get("ENABLE_LIVE_NAVIGATION", "0") == "1":
         nav_task = asyncio.create_task(navigation_worker(app))
         app.state.nav_task = nav_task
+        logger.info("navigation.worker.started")
 
     rag_task = None
     if os.environ.get("RAG_NEWS_ENABLED", "0") == "1":
         from app.services.rag_traffic import rag_ingestion_worker
         rag_task = asyncio.create_task(rag_ingestion_worker(app, redis_client))
         app.state.rag_task = rag_task
+        logger.info("rag.ingestion.worker.started")
 
     report_task = None
     if os.environ.get("INTERNAL_REPORT_AGENT_ENABLED", "0") == "1":
@@ -260,10 +253,12 @@ async def lifespan(app: FastAPI):
         report_task = asyncio.create_task(
             internal_report_agent(app, redis_client))
         app.state.report_task = report_task
+        logger.info("reports.agent.worker.started")
 
     try:
         yield
     finally:
+        logger.info("system.shutdown")
         if warmup_task is not None:
             warmup_task.cancel()
         if city_task is not None:
@@ -286,7 +281,7 @@ async def lifespan(app: FastAPI):
         try:
             await dispose_db()
         except Exception as exc:
-            logging.getLogger("app").warning("Penutupan database gagal: %s", exc)
+            logger.warning("db.dispose_failed", error=str(exc))
 
 
 def _cors_origins() -> list[str]:
@@ -348,6 +343,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Correlation ID middleware (must be first to capture all requests)
+app.add_middleware(CorrelationIdMiddleware)
+
+# Metrics middleware
+class _MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not METRICS_ENABLED:
+            return await call_next(request)
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        record_http_request(request.method, request.url.path, response.status_code, duration)
+        return response
+
+app.add_middleware(_MetricsMiddleware)
 
 
 class _UiNoCacheMiddleware(BaseHTTPMiddleware):
@@ -654,6 +665,12 @@ async def _uniform_http_exception(request, exc: HTTPException):
     )
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """Prometheus metrics endpoint."""
+    return metrics_endpoint()
+
+
 app.include_router(api_router, prefix="/api/v1")
 
 
@@ -675,7 +692,6 @@ def _build_health():
     osmnx_available = False
     osmnx_error = None
     try:
-        import osmnx
         osmnx_available = True
     except Exception as exc:
         osmnx_error = f"{type(exc).__name__}: {exc}"
@@ -746,9 +762,9 @@ def _build_health():
         try:
             from app.services.pathfinding.core_a_star import run_a_star
             from app.services.pathfinding.graph_loader import (
-                load_osm_graph_by_point,
-                find_nearest_node,
                 auto_radius,
+                find_nearest_node,
+                load_osm_graph_by_point,
             )
 
             dist_meters = auto_radius(

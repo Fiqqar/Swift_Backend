@@ -24,12 +24,19 @@ Pesan keluar: `ack`, `error`, `route_progress`, `off_route_warning`,
 """
 
 import json
-import logging
 import os
 import time
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
+from app.core.logging import get_logger, ws_correlation_id
+from app.core.metrics import (
+    nav_active_sessions,
+    nav_off_route_warnings_total,
+    nav_reroute_duration_seconds,
+    nav_reroutes_total,
+    nav_ws_connections_total,
+)
 from app.core.security import decode_access_token
 from app.services import ai_agent
 from app.services.navigation import (
@@ -53,7 +60,7 @@ from app.services.tracking import (
 
 router = APIRouter(tags=["Navigation"])
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("navigation")
 
 _NAV_POS_MAX_RATE_SECONDS = float(
     os.environ.get("NAV_POS_MAX_RATE_SECONDS", "3"))
@@ -261,6 +268,8 @@ async def _handle_location_update(websocket: WebSocket, app,
 
     if dist > OFF_ROUTE_THRESHOLD_M:
         was_active = session.off_route_active
+        nav_off_route_warnings_total.inc()
+        logger.warning("nav.off_route.warning", kurir_id=session.kurir_id, distance_m=round(dist, 2), threshold_m=OFF_ROUTE_THRESHOLD_M)
         if AI_REROUTE_ENABLED and now >= session.cooldown_until:
             from app.services.ai_agent import (
                 build_reroute_context,
@@ -283,9 +292,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                 if action == "ignore":
                     session.off_route_active = False
                     session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
-                    logger.info(
-                        "[NAV] AI abaikan off-route kurir %s (%s).",
-                        session.kurir_id, decision.get("reason"))
+                    logger.info("nav.reroute.ai_ignored", kurir_id=session.kurir_id, reason=decision.get("reason"))
                     return
                 if action == "apply":
                     session.off_route_active = True
@@ -293,11 +300,15 @@ async def _handle_location_update(websocket: WebSocket, app,
                     if not was_active:
                         await _send_off_route_warning()
                     old_prog = remaining_progress(session, lat, lon)
+                    reroute_start = time.time()
                     response = await compute_reroute(
                         app, redis, session, lat, lon, traffic=True)
                     if response is not None:
                         session.coords = list(response.route_coordinates)
                         new_eta_s = response.estimated_time_seconds or 0.0
+                        reroute_duration = time.time() - reroute_start
+                        nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
+                        nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
                         await websocket.send_json({
                             "type": "auto_rerouted" if AUTO_REROUTE
                             else "reroute_available",
@@ -319,9 +330,7 @@ async def _handle_location_update(websocket: WebSocket, app,
                 session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
                 if not was_active:
                     await _send_off_route_warning()
-                logger.info(
-                    "[NAV] AI tunda reroute kurir %s (%s).",
-                    session.kurir_id, decision.get("reason"))
+                logger.info("nav.reroute.ai_deferred", kurir_id=session.kurir_id, reason=decision.get("reason"))
                 return
         if not session.off_route_active:
             session.off_route_active = True
@@ -329,11 +338,15 @@ async def _handle_location_update(websocket: WebSocket, app,
         if now >= session.cooldown_until:
             session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
             old_prog = remaining_progress(session, lat, lon)
+            reroute_start = time.time()
             response = await compute_reroute(
                 app, redis, session, lat, lon, traffic=True)
             if response is not None:
                 session.coords = list(response.route_coordinates)
                 new_eta_s = response.estimated_time_seconds or 0.0
+                reroute_duration = time.time() - reroute_start
+                nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
+                nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
                 await websocket.send_json({
                     "type": "auto_rerouted" if AUTO_REROUTE
                     else "reroute_available",
@@ -376,10 +389,12 @@ async def _handle_complete_leg(websocket: WebSocket, session: NavSession,
         return
     if result.get("done"):
         await clear_nav_route(redis, session.kurir_id)
+        logger.info("nav.complete", kurir_id=session.kurir_id, route_id=session.route_id)
         await websocket.send_json({
             "type": "route_complete", "ok": True,
             "route_id": session.route_id, "ts": int(time.time())})
         return
+    logger.info("nav.leg.completed", kurir_id=session.kurir_id, leg_index=result["leg_index"], package_id=result.get("package_id"), recipient=result.get("recipient_name"))
     await websocket.send_json({
         "type": "ack", "ok": True,
         "action": "complete_leg",
@@ -451,8 +466,12 @@ async def navigation_ws(websocket: WebSocket):
         return
     await websocket.accept()
 
+    # Set correlation ID for this WS connection
+    cid = ws_correlation_id(websocket)
+    
     kurir_id = _auth_kurir_id(websocket)
     if kurir_id is None:
+        nav_ws_connections_total.labels(status="error").inc()
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
@@ -460,17 +479,25 @@ async def navigation_ws(websocket: WebSocket):
     redis = getattr(app.state, "redis", None)
     registry = getattr(app.state, "nav_registry", None)
     if registry is None:
+        nav_ws_connections_total.labels(status="error").inc()
         await websocket.close(code=1011, reason="Navigation unavailable")
         return
 
     session = NavSession(kurir_id=kurir_id, ws=websocket)
     await registry.set(session)
-    logger.info("Kurir %s terhubung ke WS navigation.", kurir_id)
-
+    
+    nav_active_sessions.inc()
+    nav_ws_connections_total.labels(status="connected").inc()
+    
+    logger.info("nav.ws.connected", kurir_id=kurir_id, correlation_id=cid)
+    
+    connect_time = time.time()
+    messages_rx = 0
     last_rate_ts = 0.0
     try:
         while True:
             raw = await websocket.receive_text()
+            messages_rx += 1
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
@@ -498,10 +525,14 @@ async def navigation_ws(websocket: WebSocket):
             await _handle_location_update(
                 websocket, app, session, redis, msg)
     except WebSocketDisconnect:
-        logger.info("Kurir %s terputus dari WS navigation.", kurir_id)
+        duration = time.time() - connect_time
+        nav_ws_connections_total.labels(status="disconnected").inc()
+        logger.info("nav.ws.disconnected", kurir_id=kurir_id, duration_s=round(duration, 2), messages_rx=messages_rx, correlation_id=cid)
     except Exception as exc:
-        logger.warning("WS navigation error kurir %s: %s", kurir_id, exc)
+        nav_ws_connections_total.labels(status="error").inc()
+        logger.warning("nav.ws.error", kurir_id=kurir_id, error=str(exc), correlation_id=cid)
     finally:
+        nav_active_sessions.dec()
         await registry.remove(kurir_id)
         try:
             await websocket.close()

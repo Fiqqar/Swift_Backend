@@ -21,7 +21,6 @@ Kegagalan apa pun bersifat non-fatal: memanggil balik ke routing biasa.
 
 import asyncio
 import json
-import logging
 import math
 import os
 import re
@@ -29,12 +28,13 @@ import time
 
 from starlette.concurrency import run_in_threadpool
 
+from app.core.logging import get_logger
 from app.services import ai_agent
 from app.services.pathfinding.core_a_star import haversine_distance
 from app.services.traffic.matcher import snap_segment
 from app.services.traffic.poller import _snap_tolerance
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("rag")
 
 # ---------------------------------------------------------------------------
 # Konfigurasi (dibaca saat import, pola sama seperti ai_agent).

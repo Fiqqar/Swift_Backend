@@ -1,7 +1,12 @@
 import asyncio
-import logging
 import os
+import time
 
+from app.core.logging import get_logger
+from app.core.metrics import (
+    traffic_penalty_edges_total,
+    traffic_poller_duration_seconds,
+)
 from app.services.cache_service import (
     PENALTIES_KEY,
     clear_penalties,
@@ -9,7 +14,7 @@ from app.services.cache_service import (
 from app.services.traffic.matcher import snap_segment
 from app.services.traffic.provider import get_providers, traffic_enabled
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("traffic")
 
 _PROVIDER_PRIORITY = {"tomtom": 0, "internal": 1}
 
@@ -60,10 +65,10 @@ async def _collect_events(providers) -> list:
 
 
 async def poll_once(app, redis) -> int:
+    start = time.perf_counter()
     graph, locations = _reference_graph(app)
     if graph is None or locations is None:
-        logger.warning(
-            "[TRAFFIC] Tidak ada graf rujukan, penalti dikosongkan.")
+        logger.warning("traffic.no_reference_graph", action="clearing_penalties")
         await clear_penalties(redis)
         return 0
 
@@ -85,21 +90,26 @@ async def poll_once(app, redis) -> int:
         await redis.hset(PENALTIES_KEY, mapping={str(k): str(v) for k, v in weights.items()})
     else:
         await clear_penalties(redis)
-    logger.info("[TRAFFIC] Poll selesai: %d event -> %d edge penalti.",
-                len(events), len(weights))
+    
+    # Metrics
+    duration = time.perf_counter() - start
+    traffic_poller_duration_seconds.observe(duration)
+    traffic_penalty_edges_total.labels(source="poller").inc(len(weights))
+    
+    logger.info("traffic.poll_completed", events=len(events), edges_penalized=len(weights), duration_ms=round(duration * 1000, 2))
     return len(weights)
 
 
 async def traffic_poller(app, redis) -> None:
     interval = _poll_interval()
-    logger.info("[TRAFFIC] Poller dimulai (interval %.0fs).", interval)
+    logger.info("traffic.poller.started", interval_s=interval)
     while True:
         try:
             await poll_once(app, redis)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[TRAFFIC] Siklus poll gagal: %s", exc)
+            logger.warning("traffic.poller.cycle_failed", error=str(exc))
         await asyncio.sleep(interval)
 
 

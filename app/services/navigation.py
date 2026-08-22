@@ -12,14 +12,14 @@ hanya berisi logika murni agar mudah diuji.
 """
 
 import asyncio
-import logging
 import math
 import os
 import time
 
+from app.core.logging import get_logger
 from app.services.ai_agent import AI_REROUTE_ENABLED
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("navigation")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -236,7 +236,8 @@ def remaining_progress(session: NavSession, lat: float,
 async def compute_reroute(app, redis, session: NavSession,
                           lat: float, lon: float,
                           traffic: bool = True,
-                          extra_penalties: dict[int, float] | None = None):
+                          extra_penalties: dict[int, float] | None = None,
+                          reroute_type: str = "traffic"):
     """Hitung ulang rute dari posisi kini ke dest aktif.
 
     Menggunakan ulang pipeline pathfinding yang sudah ada (`_resolve_plan` +
@@ -266,10 +267,10 @@ async def compute_reroute(app, redis, session: NavSession,
         plan = await run_in_threadpool(
             _resolve_plan, app, lat, lon, dest[0], dest[1])
     except AreaNotCoveredError as exc:
-        logger.info("[NAV] Reroute area tak tercakup: %s", exc)
+        logger.info("nav.reroute.area_not_covered", kurir_id=session.kurir_id, error=str(exc))
         return None
     except Exception as exc:
-        logger.warning("[NAV] Gagal resolve plan saat reroute: %s", exc)
+        logger.warning("nav.reroute.plan_failed", kurir_id=session.kurir_id, error=str(exc))
         return None
 
     leg_payload = RouteRequest(

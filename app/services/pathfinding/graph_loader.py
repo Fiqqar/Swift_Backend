@@ -1,5 +1,4 @@
 import json
-import logging
 import math
 import os
 import pickle
@@ -8,13 +7,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 
+from app.core.logging import get_logger
 from app.services.pathfinding.core_a_star import (
     edge_id,
     haversine_distance,
-)
-from app.services.pathfinding.preprocess import (
-    PathGraph,
-    build_path_graph,
 )
 from app.services.pathfinding.pbf_registry import (
     PbfEntry,
@@ -22,30 +18,20 @@ from app.services.pathfinding.pbf_registry import (
     pbfs_available,
     select_pbf,
 )
+from app.services.pathfinding.preprocess import (
+    PathGraph,
+    build_path_graph,
+)
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("routing")
 
 
 class AreaNotCoveredError(ValueError):
     """Area yang diminta tidak tercakup oleh file PBF lokal."""
 
 
-def _setup_perf_logging():
-    log = logging.getLogger("pathfinding")
-    log.setLevel(logging.INFO)
-    if not log.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s [pathfinding] %(message)s"))
-        log.addHandler(handler)
-        log.propagate = False
-
-
-_setup_perf_logging()
-
-
 def _perf(label: str, start: float) -> None:
-    logger.info("[PERF] %s: %.1f ms", label, (perf_counter() - start) * 1000.0)
+    logger.info("perf", label=label, duration_ms=round((perf_counter() - start) * 1000.0, 2))
 
 
 _PROBE_TIMEOUT = 5
@@ -265,10 +251,8 @@ def _adaptive_tag(level: int, rect: tuple | None, pbf_id: str,
     def s(v):
         return round(v / grid) * grid
 
-    return ("{pbf}_l{level}_{minlon:.5f}_{minlat:.5f}_{maxlon:.5f}_{maxlat:.5f}"
-            .format(pbf=pbf_id, level=level, minlon=s(minlon),
-                    minlat=s(minlat), maxlon=s(maxlon),
-                    maxlat=s(maxlat)))
+    return (f"{pbf_id}_l{level}_{s(minlon):.5f}_{s(minlat):.5f}_{s(maxlon):.5f}_{s(maxlat):.5f}"
+            )
 
 
 def _cache_file(prefix: str, key: tuple) -> str:
@@ -1140,7 +1124,7 @@ def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
     scale = int(round(1.0 / _LOC_BUCKET))
     bc = (int(round(lat * scale)), int(round(lon * scale)))
     idx = _loc_index(locations)
-    for r in range(0, 512):
+    for r in range(512):
         found_any = False
         for c in range(bc[1] - r, bc[1] + r + 1):
             for rr in (bc[0] - r, bc[0] + r):
