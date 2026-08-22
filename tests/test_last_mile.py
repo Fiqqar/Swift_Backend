@@ -138,7 +138,7 @@ def test_way_kept_permissive():
 
 
 def test_demo_grid_vehicle_blocking_still_works():
-    g, locs, ec = _build_demo_grid(-6.2, 106.8, 3000)
+    g, locs, ec, _ = _build_demo_grid(-6.2, 106.8, 3000)
     pg = build_path_graph(g, locs, -6.2, 106.8, enable_ch=False, edge_classes=ec)
     assert len(ec) > 0
     assert adjacent_highway_classes(pg.graph, ec, list(locs)[0])

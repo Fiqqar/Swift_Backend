@@ -1,7 +1,65 @@
 from app.services.pathfinding.core_a_star import edge_id
 from app.services.pathfinding.snap import k_nearest_nodes
+from collections import deque
 
 _BLOCKED = float("inf")
+
+
+def compute_components(graph: dict) -> dict[int, int]:
+    """Compute connected components of an undirected graph.
+    
+    Returns dict mapping node_id -> component_id.
+    Component 0 is the largest (main) component.
+    """
+    if not graph:
+        return {}
+    
+    visited = set()
+    components = {}
+    comp_id = 0
+    
+    for start in graph:
+        if start in visited:
+            continue
+        # BFS to find all nodes in this component
+        queue = deque([start])
+        visited.add(start)
+        comp_nodes = []
+        
+        while queue:
+            u = queue.popleft()
+            comp_nodes.append(u)
+            for v in graph.get(u, ()):
+                if v not in visited:
+                    visited.add(v)
+                    queue.append(v)
+        
+        for n in comp_nodes:
+            components[n] = comp_id
+        comp_id += 1
+    
+    # Renumber so component 0 = largest component
+    if not components:
+        return {}
+    
+    # Count nodes per component
+    comp_sizes = {}
+    for nid, cid in components.items():
+        comp_sizes[cid] = comp_sizes.get(cid, 0) + 1
+    
+    # Sort components by size (descending)
+    sorted_comps = sorted(comp_sizes.items(), key=lambda x: x[1], reverse=True)
+    
+    # Map old component IDs to new (0 = largest)
+    comp_remap = {old_cid: new_cid for new_cid, (old_cid, _) in enumerate(sorted_comps)}
+    
+    return {nid: comp_remap[cid] for nid, cid in components.items()}
+
+
+def get_main_component_nodes(graph: dict) -> set[int]:
+    """Return set of node_ids in the largest connected component (component 0)."""
+    components = compute_components(graph)
+    return {nid for nid, cid in components.items() if cid == 0}
 
 
 def _neighbors(graph: dict, u, blocked_edge_ids: set) -> list:

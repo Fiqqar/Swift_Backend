@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from app.services.pathfinding.connectivity import (
     nearest_node_reaching,
     resolve_goal,
+    get_main_component_nodes,
 )
 from app.services.pathfinding.core_a_star import (
     edge_id,
@@ -42,6 +43,7 @@ class HierarchicalResult:
     base: PathGraph
     portal_origin: set
     portal_dest: set
+    main_component_nodes: set[int] | None = None  # Nodes in main connected component of base graph
     warning: str | None = None
     fallback_origin: bool = False
     fallback_dest: bool = False
@@ -71,6 +73,8 @@ def build_hierarchical(lat1: float, lon1: float,
                        lat2: float, lon2: float) -> HierarchicalResult:
     base = load_base_graph()
     base_ids = set(base.graph)
+    # Compute main connected component of base graph for snapping
+    main_component_nodes = get_main_component_nodes(base.graph)
     warnings: list = []
     endpoints = [(lat1, lon1), (lat2, lon2)]
 
@@ -95,6 +99,7 @@ def build_hierarchical(lat1: float, lon1: float,
         base=base,
         portal_origin=portal_a,
         portal_dest=portal_b,
+        main_component_nodes=main_component_nodes,
         warning="; ".join(warnings) or None,
         fallback_origin=fb_a,
         fallback_dest=fb_b,
@@ -186,20 +191,58 @@ def route_hierarchical(result: HierarchicalResult,
     dest = result.dest
     warnings: list = []
 
-    def _snap(pg_locations: dict, lat: float, lon: float) -> int | None:
-        nid = find_nearest_node(lat, lon, pg_locations)
+    # Main component nodes for snapping (filter to main connected component)
+    main_component = result.main_component_nodes
+    if main_component is None:
+        # Backward compatibility: if not provided, use all nodes in base graph
+        main_component = set(base.graph.keys())
+
+    def _snap(pg_locations: dict, lat: float, lon: float,
+              allowed_nodes: set[int] | None = None,
+              label: str = "") -> tuple[int | None, str | None]:
+        """Snap point to nearest node, optionally restricted to allowed_nodes.
+        
+        Returns (node_id, warning) where warning is set if the nearest node
+        (without filter) was in a disconnected component.
+        """
+        # First find nearest without filter to detect disconnected component
+        nearest_unfiltered = find_nearest_node(lat, lon, pg_locations, None)
+        nid = find_nearest_node(lat, lon, pg_locations, allowed_nodes)
         if nid is None:
-            return None
+            return None, None
         if haversine_distance((lat, lon), pg_locations[nid]) > _MAX_SNAP_DIST:
-            return None
-        return nid
+            return None, None
+        
+        # Check if unfiltered nearest was in a different component
+        warning = None
+        if (nearest_unfiltered is not None and 
+            allowed_nodes is not None and 
+            nearest_unfiltered not in allowed_nodes):
+            # The true nearest node is not in allowed set (likely disconnected)
+            dist_unfiltered = haversine_distance((lat, lon), pg_locations[nearest_unfiltered])
+            dist_filtered = haversine_distance((lat, lon), pg_locations[nid])
+            warning = (f"{label} disesuaikan ke jalan terhubung "
+                      f"(titik terdekat terputus: {dist_unfiltered:.0f} m, "
+                      f"dipakai: {dist_filtered:.0f} m)")
+        
+        return nid, warning
 
     blocked_edges = _blocked_edges(penalties)
 
-    start_a = _snap(result.local_origin.locations, origin[0], origin[1]) \
-        if result.portal_origin else None
-    goal_b = _snap(result.local_dest.locations, dest[0], dest[1]) \
-        if result.portal_dest else None
+    # For local graphs, prefer nodes that are in the base graph's main component
+    local_origin_allowed = set(result.local_origin.locations.keys()) & main_component
+    local_dest_allowed = set(result.local_dest.locations.keys()) & main_component
+
+    start_a, warn_a = _snap(result.local_origin.locations, origin[0], origin[1],
+                        local_origin_allowed, label="Origin") \
+        if result.portal_origin else (None, None)
+    goal_b, warn_b = _snap(result.local_dest.locations, dest[0], dest[1],
+                           local_dest_allowed, label="Destinasi") \
+        if result.portal_dest else (None, None)
+    if warn_a:
+        warnings.append(warn_a)
+    if warn_b:
+        warnings.append(warn_b)
     log_snap(logger, "origin", origin[0], origin[1], start_a,
              result.local_origin.locations, result.local_origin.graph,
              result.local_origin.edge_classes)
@@ -251,7 +294,7 @@ def route_hierarchical(result: HierarchicalResult,
                              result.local_origin.graph,
                              result.local_origin.edge_classes)
                 else:
-                    start_a = _snap(base_locations, origin[0], origin[1])
+                    start_a, _ = _snap(base_locations, origin[0], origin[1], main_component, label="Origin")
                     if start_a is None:
                         raise AreaNotCoveredError(
                             "Origin tidak terhubung ke jalan utama")
@@ -261,7 +304,7 @@ def route_hierarchical(result: HierarchicalResult,
                         "Origin tak terjangkau jalan utama; "
                         "memakai jalan utama terdekat")
             else:
-                start_a = _snap(base_locations, origin[0], origin[1])
+                start_a, _ = _snap(base_locations, origin[0], origin[1], main_component, label="Origin")
                 if start_a is None:
                     raise AreaNotCoveredError(
                         "Origin tidak terhubung ke jalan utama")
@@ -270,7 +313,7 @@ def route_hierarchical(result: HierarchicalResult,
                 warnings.append(
                     "Origin tak terjangkau jalan utama; memakai jalan utama terdekat")
     else:
-        start_a = _snap(base_locations, origin[0], origin[1])
+        start_a, _ = _snap(base_locations, origin[0], origin[1], main_component, label="Origin")
         if start_a is None:
             raise AreaNotCoveredError("Origin tidak dekat graf jalan")
         dist_a, parent_a = {start_a: 0.0}, {}
@@ -301,7 +344,7 @@ def route_hierarchical(result: HierarchicalResult,
                              result.local_dest.graph,
                              result.local_dest.edge_classes)
                 else:
-                    goal_b = _snap(base_locations, dest[0], dest[1])
+                    goal_b, _ = _snap(base_locations, dest[0], dest[1], main_component, label="Destinasi")
                     if goal_b is None:
                         raise AreaNotCoveredError(
                             "Destinasi tidak terhubung ke jalan utama")
@@ -311,7 +354,7 @@ def route_hierarchical(result: HierarchicalResult,
                         "Destinasi tak terjangkau jalan utama; "
                         "memakai jalan utama terdekat")
             else:
-                goal_b = _snap(base_locations, dest[0], dest[1])
+                goal_b, _ = _snap(base_locations, dest[0], dest[1], main_component, label="Destinasi")
                 if goal_b is None:
                     raise AreaNotCoveredError(
                         "Destinasi tidak terhubung ke jalan utama")
@@ -320,7 +363,7 @@ def route_hierarchical(result: HierarchicalResult,
                 warnings.append(
                     "Destinasi tak terjangkau jalan utama; memakai jalan utama terdekat")
     else:
-        goal_b = _snap(base_locations, dest[0], dest[1])
+        goal_b, _ = _snap(base_locations, dest[0], dest[1], main_component, label="Destinasi")
         if goal_b is None:
             raise AreaNotCoveredError("Destinasi tidak dekat graf jalan")
         dist_b, parent_b = {goal_b: 0.0}, {}
