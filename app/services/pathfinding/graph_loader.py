@@ -1180,7 +1180,13 @@ def _loc_index(locations: dict):
     return idx
 
 
-def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
+def find_nearest_node(lat: float, lon: float, locations: dict,
+                      allowed_nodes: set[int] | None = None) -> int | None:
+    """Find nearest node to (lat, lon), optionally restricted to allowed_nodes.
+    
+    If allowed_nodes is provided, only considers nodes in that set.
+    This is useful for snapping to the main connected component of the graph.
+    """
     nearest_node = None
     min_dist = float('inf')
     if not locations:
@@ -1193,6 +1199,8 @@ def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
         for c in range(bc[1] - r, bc[1] + r + 1):
             for rr in (bc[0] - r, bc[0] + r):
                 for nid in idx.get((rr, c), ()):
+                    if allowed_nodes is not None and nid not in allowed_nodes:
+                        continue
                     found_any = True
                     d = haversine_distance((lat, lon), locations[nid])
                     if d < min_dist:
@@ -1201,6 +1209,8 @@ def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
         for rr in range(bc[0] - r + 1, bc[0] + r):
             for c in (bc[1] - r, bc[1] + r):
                 for nid in idx.get((rr, c), ()):
+                    if allowed_nodes is not None and nid not in allowed_nodes:
+                        continue
                     found_any = True
                     d = haversine_distance((lat, lon), locations[nid])
                     if d < min_dist:
@@ -1210,6 +1220,8 @@ def find_nearest_node(lat: float, lon: float, locations: dict) -> int | None:
             break
     if nearest_node is None:
         for node_id, coord in locations.items():
+            if allowed_nodes is not None and node_id not in allowed_nodes:
+                continue
             d = haversine_distance((lat, lon), coord)
             if d < min_dist:
                 min_dist = d

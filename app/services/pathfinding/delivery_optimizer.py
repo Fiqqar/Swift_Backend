@@ -79,6 +79,7 @@ def optimize_stop_order(
     service_types: list[str] | None = None,
     express_discount: float = EXPRESS_DISCOUNT_DEFAULT,
     return_to_hub: bool = False,
+    road_cost_fn=None,
 ) -> list[int]:
     """Urutkan indeks pengantaran (0-based) paling efisien.
 
@@ -90,11 +91,25 @@ def optimize_stop_order(
     - `return_to_hub`: bila True, rute dianggap tour tertutup kembali ke hub
       saat mengevaluasi perbaikan 2-opt (urutan yang dikembalikan tetap hanya
       indeks delivery).
+    - `road_cost_fn`: optional callable (sync) `(origin, dest) -> cost` (jarak jalan
+      dalam meter). Jika disediakan, digunakan untuk membangun distance matrix
+      menggantikan haversine. Untuk async cost function, gunakan
+      `optimize_stop_order_hybrid`.
     """
     if not deliveries:
         return []
     points = [hub] + list(deliveries)
-    matrix = haversine_matrix(points)
+    
+    if road_cost_fn is not None:
+        # Build matrix using real road distances (sync)
+        n = len(points)
+        matrix = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    matrix[i][j] = road_cost_fn(points[i], points[j])
+    else:
+        matrix = haversine_matrix(points)
 
     if service_types and express_discount < 1.0:
         for i in range(len(points)):
