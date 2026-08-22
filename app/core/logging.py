@@ -1,18 +1,17 @@
-"""Centralized logging infrastructure with hybrid JSON/text formatting."""
+"""Structured logging with structlog — JSON in production, text in development."""
 
-import contextvars
-import json
-import logging
-import logging.config
 import os
-import uuid
 from typing import Any
 
+import structlog
+from structlog.stdlib import LoggerFactory, BoundLogger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 # Context variable for correlation ID propagation across async calls
+import contextvars
+
 _correlation_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "correlation_id", default=None
 )
@@ -30,35 +29,53 @@ def set_correlation_id(cid: str | None) -> None:
 
 def generate_correlation_id() -> str:
     """Generate a new correlation ID."""
+    import uuid
     return uuid.uuid4().hex[:16]
 
 
-class CorrelationIdFilter(logging.Filter):
-    """Inject correlation ID into log records."""
+def ws_correlation_id(websocket: Any) -> str:
+    """
+    Extract or generate correlation ID for a WebSocket connection.
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        cid = get_correlation_id()
-        if cid:
-            record.correlation_id = cid
-        else:
-            record.correlation_id = "-"
-        return True
+    Tries to read a correlation ID from the client via the
+    ``x-correlation-id`` header or ``cid`` query parameter.
+    If neither is present, generates a new ID and sets it in the
+    logging context.
+
+    Returns the correlation ID string for use by the caller.
+    """
+    # Try to read from client-supplied headers or query params
+    cid = websocket.headers.get("x-correlation-id") or websocket.query_params.get("cid")
+    if cid:
+        cid = cid.strip()
+    if not cid:
+        cid = generate_correlation_id()
+    set_correlation_id(cid)
+    return cid
 
 
-class PiiFilter(logging.Filter):
+class PiiFilter:
     """Round GPS coordinates in log records to 3 decimals (~100m)."""
 
-    COORD_KEYS = {"lat", "lon", "latitude", "longitude", "origin", "destination", "current", "target"}
+    COORD_KEYS = {
+        "lat",
+        "lon",
+        "latitude",
+        "longitude",
+        "origin",
+        "destination",
+        "current",
+        "target",
+    }
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        # Round any coordinate-like fields in the record's __dict__
-        for key, value in list(record.__dict__.items()):
+    def __call__(self, logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        for key, value in list(event_dict.items()):
             if key.lower() in self.COORD_KEYS:
                 if isinstance(value, (int, float)):
-                    record.__dict__[key] = round(float(value), 3)
+                    event_dict[key] = round(float(value), 3)
                 elif isinstance(value, (list, tuple)) and len(value) == 2:
                     try:
-                        record.__dict__[key] = [round(float(v), 3) for v in value]
+                        event_dict[key] = [round(float(v), 3) for v in value]
                     except (TypeError, ValueError):
                         pass
                 elif isinstance(value, dict):
@@ -69,194 +86,100 @@ class PiiFilter(logging.Filter):
                                 rounded[k] = round(float(v), 3)
                             else:
                                 rounded[k] = v
-                        record.__dict__[key] = rounded
+                        event_dict[key] = rounded
                     except (TypeError, ValueError):
                         pass
-        return True
+        return event_dict
 
 
-class HybridFormatter(logging.Formatter):
-    """Format logs as JSON in production, colored text in development."""
+def add_correlation_id(logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Inject correlation ID into event dict."""
+    cid = get_correlation_id()
+    event_dict["correlation_id"] = cid if cid else "-"
+    return event_dict
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-        self.is_production = os.environ.get("APP_ENV", "development").lower() == "production"
-        self._color_map = {
-            logging.DEBUG: "\033[36m",    # Cyan
-            logging.INFO: "\033[32m",     # Green
-            logging.WARNING: "\033[33m",  # Yellow
-            logging.ERROR: "\033[31m",    # Red
-            logging.CRITICAL: "\033[35m", # Magenta
-        }
-        self._reset = "\033[0m"
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """
+    Assigns a correlation ID to every incoming HTTP request and exposes it
+    via the correlation ID contextvar for the duration of the request.
+    Reuses a client-supplied 'X-Correlation-ID' header if present, otherwise
+    generates a new one. The ID is echoed back in the response headers.
+    """
 
-    def format(self, record: logging.LogRecord) -> str:
-        # Base fields
-        ts = self._format_timestamp(record.created)
-        base = {
-            "ts": ts,
-            "level": record.levelname,
-            "logger": record.name,
-            "event": getattr(record, "event", record.getMessage()),
-            "correlation_id": getattr(record, "correlation_id", "-"),
-        }
+    async def dispatch(self, request: Request, call_next):
+        cid = request.headers.get("x-correlation-id") or generate_correlation_id()
+        token = _correlation_id_var.set(cid)
+        try:
+            response: Response = await call_next(request)
+        finally:
+            _correlation_id_var.reset(token)
+        response.headers["X-Correlation-ID"] = cid
+        return response
 
-        # Extract extra fields (everything not in standard LogRecord attributes)
-        standard_attrs = {
-            "name", "msg", "args", "created", "filename", "funcName", "levelname",
-            "levelno", "lineno", "module", "msecs", "message", "pathname", "process", "processName", "relativeCreated", "thread",
-            "threadName", "exc_info", "exc_text", "stack_info", "getMessage",
-            "event", "correlation_id"
-        }
-        extra = {k: v for k, v in record.__dict__.items() if k not in standard_attrs}
-        if extra:
-            base["fields"] = extra
-
-        if self.is_production:
-            return json.dumps(base, ensure_ascii=False, separators=(",", ":"))
-        else:
-            return self._format_text(base, record)
-
-    def _format_timestamp(self, created: float) -> str:
-        """Format timestamp with milliseconds."""
-        from datetime import datetime
-        dt = datetime.fromtimestamp(created)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond / 1000):03d}Z"
-
-    def _format_text(self, base: dict[str, Any], record: logging.LogRecord) -> str:
-        color = self._color_map.get(record.levelno, "")
-        level = f"{color}{record.levelname:<8}{self._reset}"
-        logger = f"\033[90m{record.name}{self._reset}"
-        event = base["event"]
-        cid = base["correlation_id"]
-
-        parts = [f"{base['ts']} {level} {logger} [{cid}] {event}"]
-
-        if "fields" in base:
-            for k, v in base["fields"].items():
-                parts.append(f"  \033[90m{k}={v}{self._reset}")
-
-        if record.exc_info:
-            parts.append(self.formatException(record.exc_info))
-
-        return "\n".join(parts)
+structlog_processors: list[Any] = [
+    structlog.processors.TimeStamper(fmt="iso"),
+    structlog.stdlib.add_log_level,
+    structlog.processors.StackInfoRenderer(),
+    structlog.processors.format_exc_info,
+    add_correlation_id,
+    PiiFilter(),
+    structlog.dev.ConsoleRenderer(),
+]
 
 
-def _get_log_levels() -> dict[str, int]:
-    """Get log levels from environment with component overrides."""
-    global_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    levels = {"": global_level}
+def get_renderer() -> Any:
+    """Return JSON renderer (production) or Console renderer (development)."""
+    is_production = os.environ.get("APP_ENV", "development").lower() == "production"
+    if is_production:
+        structlog_processors.append(structlog.processors.JSONRenderer())
+        return structlog.processors.JSONRenderer()
+    else:
+        # ConsoleRenderer already in processors list for development
+        return structlog.dev.ConsoleRenderer()
 
-    # Component-specific overrides
-    prefix = "LOG_LEVEL_"
-    for key, value in os.environ.items():
-        if key.startswith(prefix):
-            component = key[len(prefix):].lower()
-            levels[component] = value.upper()
 
-    return levels
+structlog.configure(
+    processors=structlog_processors,
+    logger_factory=LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+)
+
+
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    """Get a structlog-bound logger for the given name.
+
+    Returns a BoundLogger that accepts **kwargs in log methods,
+    e.g. logger.info("system.startup", version="1.0.0", env="development").
+    """
+    return structlog.get_logger(name)
 
 
 def setup_logging() -> None:
-    """Configure application-wide logging."""
-    log_levels = _get_log_levels()
+    """Configure application-wide structlog and standard library logging interception."""
+
     is_production = os.environ.get("APP_ENV", "development").lower() == "production"
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
-    # Determine format
-    formatter_class = "app.core.logging.HybridFormatter"
+    # Configure structlog-enabled loggers for pathfinding components
+    for component, env_key in [("", ""), ("pathfinding", "LOG_PATHFINDING")]:
+        prefix = env_key.upper() if env_key else "PATHFINDING"
+        level = os.environ.get(env_key, log_level).upper()
+        logger_name = f"pathfinding.{component}" if component else "pathfinding"
+        struct_logger = structlog.get_logger(logger_name)
 
-    # Build logging config dict
-    config = {
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "hybrid": {
-                "()": formatter_class,
-            }
-        },
-        "filters": {
-            "correlation_id": {
-                "()": "app.core.logging.CorrelationIdFilter",
-            },
-            "pii": {
-                "()": "app.core.logging.PiiFilter",
-            }
-        },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stdout",
-                "formatter": "hybrid",
-                "filters": ["correlation_id", "pii"],
-            }
-        },
-        "loggers": {},
-        "root": {
-            "level": log_levels.get("", "INFO"),
-            "handlers": ["console"],
-        }
-    }
+    # Intercept uvicorn/starlette standard library logs
+    import logging as logging_mod
 
-    # Configure component loggers
-    for component, level in log_levels.items():
-        if component:
-            logger_name = f"pathfinding.{component}"
-        else:
-            logger_name = "pathfinding"
-
-        config["loggers"][logger_name] = {
-            "level": level,
-            "handlers": ["console"],
-            "propagate": False,
-        }
-
-    # Also configure app logger for main.py startup logs
-    config["loggers"]["app"] = {
-        "level": log_levels.get("", "INFO"),
-        "handlers": ["console"],
-        "propagate": False,
-    }
-
-    logging.config.dictConfig(config)
+    for uvicorn_logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "starlette"]:
+        uvicorn_logger = logging_mod.getLogger(uvicorn_logger_name)
+        uvicorn_logger.handlers = []
+        uvicorn_logger.propagate = False
+        # Configure structlog to handle these loggers
+        structlog.get_logger(uvicorn_logger_name)
 
     # Log the configuration
-    logger = logging.getLogger("app")
-    logger.info("logging.configured", extra={"format": "json" if is_production else "text", "levels": log_levels})
-
-
-class CorrelationIdMiddleware(BaseHTTPMiddleware):
-    """Extract/generate correlation ID for each HTTP request."""
-
-    async def dispatch(self, request: Request, call_next):
-        # Extract from header or generate
-        cid = request.headers.get("x-request-id") or request.headers.get("x-trace-id")
-        if not cid:
-            cid = generate_correlation_id()
-
-        # Set in context
-        token = _correlation_id_var.set(cid)
-
-        # Add to response headers
-        response: Response = await call_next(request)
-        response.headers["x-request-id"] = cid
-
-        # Reset context
-        _correlation_id_var.reset(token)
-
-        return response
-
-
-def ws_correlation_id(websocket) -> str:
-    """Extract/generate correlation ID for WebSocket connection."""
-    # Try to get from query params or headers
-    cid = websocket.query_params.get("trace_id") or websocket.headers.get("x-trace-id")
-    if not cid:
-        cid = generate_correlation_id()
-    set_correlation_id(cid)
-    return cid
-
-
-# Convenience function for getting component loggers
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger for a pathfinding component."""
-    return logging.getLogger(f"pathfinding.{name}")
+    logger = structlog.get_logger("app")
+    logger.info(
+        "logging.configured",
+        extra={"format": "json" if is_production else "text", "level": log_level},
+    )
