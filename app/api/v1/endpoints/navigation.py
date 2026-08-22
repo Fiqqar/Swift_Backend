@@ -325,6 +325,14 @@ async def _handle_location_update(websocket: WebSocket, app,
                             "reason": "off_route",
                             "steps": session.steps,
                         })
+                        # Dynamic stop re-ordering on off-route
+                        from app.services.navigation import maybe_reorder_stops_on_off_route
+                        reordered = await maybe_reorder_stops_on_off_route(
+                            app, redis, session, lat, lon, dist)
+                        if reordered:
+                            logger.info(
+                                "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
+                                session.kurir_id)
                     return
                 session.off_route_active = True
                 session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
@@ -363,6 +371,14 @@ async def _handle_location_update(websocket: WebSocket, app,
                     "reason": "off_route",
                     "steps": session.steps,
                 })
+                # Dynamic stop re-ordering on off-route
+                from app.services.navigation import maybe_reorder_stops_on_off_route
+                reordered = await maybe_reorder_stops_on_off_route(
+                    app, redis, session, lat, lon, dist)
+                if reordered:
+                    logger.info(
+                        "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
+                        session.kurir_id)
     else:
         session.off_route_active = False
 
