@@ -272,12 +272,60 @@ def _pg_disk_path(key: tuple) -> str:
     return _cache_file(f"pg_v{_PG_VERSION}", key)
 
 
+def _serialize_pg(pg: "PathGraph") -> dict:
+    """Convert PathGraph to picklable dict, excluding non-picklable fields."""
+    return {
+        "graph": pg.graph,
+        "locations": pg.locations,
+        "geo": pg.geo,
+        "ref_lat": pg.ref_lat,
+        "ref_lon": pg.ref_lon,
+        "landmarks": pg.landmarks,
+        "landmark_dists": pg.landmark_dists,
+        "directed": pg.directed,
+        "radius": pg.radius,
+        "source": pg.source,
+        "warning": pg.warning,
+        "bbox": pg.bbox,
+        "edge_classes": pg.edge_classes,
+        "edge_names": pg.edge_names,
+        "_alt_k": pg._alt_k,
+    }
+
+
+def _deserialize_pg(data: dict) -> "PathGraph":
+    """Reconstruct PathGraph from picklable dict."""
+    from app.services.pathfinding.preprocess import PathGraph
+    pg = PathGraph(
+        graph=data["graph"],
+        locations=data["locations"],
+        geo=data["geo"],
+        ref_lat=data["ref_lat"],
+        ref_lon=data["ref_lon"],
+        landmarks=data.get("landmarks", []),
+        landmark_dists=data.get("landmark_dists", []),
+        ch=None,
+        directed=data.get("directed", False),
+        radius=data.get("radius", 0),
+        source=data.get("source", "demo"),
+        warning=data.get("warning"),
+        bbox=data.get("bbox"),
+        edge_classes=data.get("edge_classes"),
+        edge_names=data.get("edge_names"),
+        _alt_k=data.get("_alt_k", 0),
+    )
+    return pg
+
+
 def _save_disk(path: str, data) -> None:
     try:
         os.makedirs(_DISK_CACHE_DIR, exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "wb") as fh:
-            pickle.dump(data, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            if isinstance(data, PathGraph):
+                pickle.dump(_serialize_pg(data), fh, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                pickle.dump(data, fh, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
     except Exception as exc:
         logger.warning("Gagal menyimpan cache disk: %s", exc)
@@ -592,7 +640,11 @@ def load_path_graph(lat: float, lon: float, dist_meters: int = 3000,
     if os.path.exists(path):
         try:
             with open(path, "rb") as fh:
-                pg = pickle.load(fh)
+                data = pickle.load(fh)
+            if isinstance(data, PathGraph):
+                pg = data
+            else:
+                pg = _deserialize_pg(data)
             if getattr(pg, "bbox", None) is None:
                 pg.bbox = rect
             _strip_stale_landmarks(pg)
@@ -820,7 +872,11 @@ def load_local_graph_point(lat: float, lon: float,
     if os.path.exists(path):
         try:
             with open(path, "rb") as fh:
-                pg = pickle.load(fh)
+                data = pickle.load(fh)
+            if isinstance(data, PathGraph):
+                pg = data
+            else:
+                pg = _deserialize_pg(data)
             if getattr(pg, "bbox", None) is None:
                 pg.bbox = _pbf_bbox(lat, lon, radius)
             _strip_stale_landmarks(pg)
@@ -884,7 +940,11 @@ def load_local_graph_covering(lat1: float, lon1: float,
     if os.path.exists(path):
         try:
             with open(path, "rb") as fh:
-                pg = pickle.load(fh)
+                data = pickle.load(fh)
+            if isinstance(data, PathGraph):
+                pg = data
+            else:
+                pg = _deserialize_pg(data)
             if getattr(pg, "bbox", None) is None:
                 pg.bbox = rect
             _strip_stale_landmarks(pg)
@@ -994,7 +1054,11 @@ def load_base_graph() -> PathGraph:
                 "bersama data/pbf ke server.")
         t_load = perf_counter()
         with open(path, "rb") as fh:
-            pg = pickle.load(fh)
+            data = pickle.load(fh)
+        if isinstance(data, PathGraph):
+            pg = data
+        else:
+            pg = _deserialize_pg(data)
         _strip_stale_landmarks(pg)
         _perf("Base Graph Load", t_load)
         _base_pg = pg
