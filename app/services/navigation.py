@@ -46,6 +46,13 @@ AUTO_REROUTE = _env_bool("AUTO_REROUTE", True)
 NAV_PROGRESS_MIN_INTERVAL_SECONDS = _env_float(
     "NAV_PROGRESS_MIN_INTERVAL_SECONDS", 3.0)
 
+# Dynamic Stop Re-Ordering on Off-Route
+OFF_ROUTE_REORDER_THRESHOLD_M = _env_float("OFF_ROUTE_REORDER_THRESHOLD_M", 50.0)
+REORDER_MIN_DISTANCE_SAVING_PCT = _env_float("REORDER_MIN_DISTANCE_SAVING_PCT", 20.0)
+REORDER_COOLDOWN_SECONDS = _env_float("REORDER_COOLDOWN_SECONDS", 60.0)
+MAX_REORDERS_PER_ROUTE = int(os.environ.get("MAX_REORDERS_PER_ROUTE", "3"))
+REORDER_STABILITY_WINDOW = int(os.environ.get("REORDER_STABILITY_WINDOW", "2"))
+
 
 class NavSession:
     """State real-time navigation untuk satu kurir (in-memory)."""
@@ -79,6 +86,12 @@ class NavSession:
         self.current_package_id: int | None = None
         self.current_recipient: str | None = None
         self.total_legs: int = 1
+
+        # Dynamic Stop Re-Ordering state
+        self.reorder_cooldown_until: float = 0.0
+        self.reorder_count: int = 0
+        self._reorder_candidate: list[int] | None = None
+        self._reorder_candidate_count: int = 0
 
 
 class NavRegistry:
@@ -406,6 +419,204 @@ def advance_leg(session: NavSession, nav: dict) -> dict | None:
         "dest": [float(dest[0]), float(dest[1])],
         "polyline": leg.get("encoded"),
     }
+
+
+async def maybe_reorder_stops_on_off_route(
+    app, redis, session: NavSession,
+    current_lat: float, current_lon: float,
+    off_route_distance_m: float
+) -> bool:
+    """
+    Evaluate and potentially re-order remaining stops when courier goes off-route.
+    
+    Uses cached road distances (no fresh traffic) for speed.
+    Maintains EXPRESS priority. Switches active polyline if current stop changes.
+    
+    Returns True if stops were re-ordered and new route sent to client.
+    """
+    # 1. Only for multi-leg routes with remaining stops
+    if session.kind != "multi" or session.leg_index >= session.total_legs - 1:
+        return False
+    
+    # 2. Check off-route threshold for re-ordering (higher than warning threshold)
+    if off_route_distance_m <= OFF_ROUTE_REORDER_THRESHOLD_M:
+        return False
+    
+    # 3. Cooldown check
+    now = time.time()
+    if now < session.reorder_cooldown_until:
+        return False
+    
+    # 4. Max re-orders per route limit
+    if session.reorder_count >= MAX_REORDERS_PER_ROUTE:
+        return False
+    
+    # 5. Get remaining stops from Redis snapshot
+    from app.services.tracking import get_nav_route
+    nav = await get_nav_route(redis, session.kurir_id)
+    if not nav:
+        return False
+    legs = nav.get("legs", [])
+    remaining_legs = legs[session.leg_index + 1:]
+    if len(remaining_legs) < 2:  # Need at least 2 to reorder
+        return False
+    
+    # 6. Prepare stops data for optimizer
+    stops_coords = [(leg["dest"][0], leg["dest"][1]) for leg in remaining_legs]
+    service_types = [leg["service_type"] for leg in remaining_legs]
+    package_ids = [leg["package_id"] for leg in remaining_legs]
+    recipient_names = [leg["recipient_name"] for leg in remaining_legs]
+    
+    # 7. Use cached road distance function for ordering (no fresh traffic)
+    from app.api.v1.endpoints.pathfinding import _ordering_road_distance
+    
+    mode = session.mode
+    last_mile = session.last_mile
+    
+    async def road_cost_fn(o, d):
+        return await _ordering_road_distance(
+            app, redis, mode, last_mile, o[0], o[1], d[0], d[1])
+    
+    # 8. Run hybrid optimizer with current position as start
+    from app.services.pathfinding.delivery_optimizer import optimize_stop_order_hybrid
+    
+    try:
+        new_order = await optimize_stop_order_hybrid(
+            (current_lat, current_lon), stops_coords,
+            service_types=service_types,
+            road_cost_fn=road_cost_fn,
+            top_k=3,
+            return_to_hub=False,
+        )
+    except Exception as exc:
+        logger.warning("[NAV] Re-order optimizer failed: %s", exc)
+        return False
+    
+    # 9. Check if order actually changed
+    current_order = list(range(len(remaining_legs)))
+    if new_order == current_order:
+        # Reset stability window
+        session._reorder_candidate = None
+        session._reorder_candidate_count = 0
+        return False
+    
+    # 10. Stability window / anti-flicker: require N consecutive same candidate
+    if session._reorder_candidate == new_order:
+        session._reorder_candidate_count += 1
+    else:
+        session._reorder_candidate = new_order
+        session._reorder_candidate_count = 1
+    
+    if session._reorder_candidate_count < REORDER_STABILITY_WINDOW:
+        return False
+    
+    # 11. Verify distance savings >= 20%
+    # Compute total road distance for current order vs new order
+    async def _total_distance_for_order(order_indices: list[int]) -> float:
+        total = 0.0
+        prev = (current_lat, current_lon)
+        for idx in order_indices:
+            dest_coord = stops_coords[idx]
+            cost = await road_cost_fn(prev, dest_coord)
+            total += cost
+            prev = dest_coord
+        return total
+    
+    try:
+        old_total_dist = await _total_distance_for_order(current_order)
+        new_total_dist = await _total_distance_for_order(new_order)
+    except Exception as exc:
+        logger.warning("[NAV] Distance comparison failed: %s", exc)
+        return False
+    
+    if old_total_dist <= 0:
+        return False
+    
+    saving_pct = ((old_total_dist - new_total_dist) / old_total_dist) * 100.0
+    if saving_pct < REORDER_MIN_DISTANCE_SAVING_PCT:
+        logger.info(
+            "[NAV] Re-order rejected: saving %.1f%% < %.1f%% threshold",
+            saving_pct, REORDER_MIN_DISTANCE_SAVING_PCT)
+        return False
+    
+    # 12. Apply re-order: rebuild legs in new order
+    reordered_legs = []
+    for new_idx, old_idx in enumerate(new_order):
+        leg = remaining_legs[old_idx].copy()
+        leg["stop_order"] = session.leg_index + 1 + new_idx
+        reordered_legs.append(leg)
+    
+    # Update Redis snapshot with new leg order
+    new_legs = legs[:session.leg_index + 1] + reordered_legs
+    nav["legs"] = new_legs
+    
+    from app.services.tracking import set_nav_route
+    await set_nav_route(redis, session.kurir_id, nav)
+    
+    # 13. If first remaining stop changed, switch active polyline immediately
+    first_stop_changed = (new_order[0] != 0)
+    if first_stop_changed:
+        new_first_leg = reordered_legs[0]
+        from app.services.polyline import decode_polyline
+        
+        new_coords = decode_polyline(new_first_leg.get("encoded") or "")
+        if len(new_coords) >= 2:
+            new_dest = new_first_leg.get("dest")
+            if new_dest:
+                # Update session state for new active leg
+                session.coords = new_coords
+                session.dest = (float(new_dest[0]), float(new_dest[1]))
+                session.leg_index = session.leg_index + 1  # Move to new first leg
+                session.current_package_id = new_first_leg.get("package_id")
+                session.current_recipient = new_first_leg.get("recipient_name")
+                session.off_route_active = False
+                session.cooldown_until = 0.0
+                session.last_progress_push = 0.0
+                
+                # Reset navigation state for new leg
+                session.node_sequence = []
+                session.edge_classes = {}
+                session.edge_names = {}
+                session.steps = []
+                session.current_step_index = 0
+                session.traveled_distance_m = 0.0
+                
+                logger.info(
+                    "[NAV] Re-order applied: kurir=%s new_stop=%s saving=%.1f%%",
+                    session.kurir_id, new_first_leg.get("package_id"), saving_pct)
+    
+    # 14. Send re-order notification to client
+    if session.ws is not None:
+        try:
+            await session.ws.send_json({
+                "type": "stops_reordered",
+                "ok": True,
+                "route_id": session.route_id,
+                "reorder_reason": "off_route_closer_to_next_stop",
+                "new_stop_order": [
+                    {
+                        "package_id": leg.get("package_id"),
+                        "recipient_name": leg.get("recipient_name"),
+                        "service_type": leg.get("service_type"),
+                        "stop_order": leg.get("stop_order"),
+                        "dest": leg.get("dest"),
+                    }
+                    for leg in reordered_legs
+                ],
+                "active_leg_changed": first_stop_changed,
+                "polyline": encode_polyline(session.coords, 5) if first_stop_changed else None,
+                "ts": int(time.time()),
+            })
+        except Exception as exc:
+            logger.warning("[NAV] Failed to send reorder notification: %s", exc)
+    
+    # 15. Update re-order state
+    session.reorder_cooldown_until = now + REORDER_COOLDOWN_SECONDS
+    session.reorder_count += 1
+    session._reorder_candidate = None
+    session._reorder_candidate_count = 0
+    
+    return True
 
 
 def _should_traffic_reroute(session: NavSession, new_eta_s: float) -> bool:
