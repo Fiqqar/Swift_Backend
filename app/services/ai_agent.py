@@ -17,14 +17,15 @@ Kontrak:
 
 import asyncio
 import json
-import logging
 import os
 import re
 import time
 
 from starlette.concurrency import run_in_threadpool
 
-logger = logging.getLogger("pathfinding")
+from app.core.logging import get_logger
+
+logger = get_logger("agent")
 
 
 def _env_bool(name: str, default: bool) -> bool:

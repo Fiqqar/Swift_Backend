@@ -53,6 +53,17 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #
 .nav-progress-bar { background: #e3e8ed; border-radius: 999px; height: 8px; overflow: hidden; }
 .nav-progress-bar > div { height: 100%; background: #0f6dc1; border-radius: 999px; transition: width .3s ease; }
 .nav-progress-meta { display: flex; justify-content: space-between; font-size: 11px; color: #5b6b7b; margin-top: 4px; }
+.nav-leg-info { margin-top: 4px; font-size: 11px; color: #0f6dc1; font-weight: 600; display: none; }
+.nav-leg-info #nav-recipient { display: block; font-size: 12px; color: #1f2933; margin-top: 2px; }
+.nav-traffic { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.nav-traffic.free { background: #d4f6db; color: #1e7d32; }
+.nav-traffic.moderate { background: #fff3d4; color: #b7791f; }
+.nav-traffic.heavy { background: #fce4e4; color: #d81b1b; }
+.nav-maneuver { display: none; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 12px; background: #0f6dc1; color: #fff; border-radius: 10px; box-shadow: 0 4px 12px rgba(15, 109, 193, 0.3); }
+.nav-maneuver.show { display: flex; }
+.nav-maneuver-icon { width: 36px; height: 36px; flex-shrink: 0; background: rgba(255,255,255,0.2); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+.nav-maneuver-text { flex: 1; font-size: 14px; font-weight: 600; }
+.nav-maneuver-distance { font-size: 12px; opacity: 0.9; font-variant-numeric: tabular-nums; }
 .traffic-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: #5b6b7b; }
 .lg { width: 14px; height: 5px; border-radius: 2px; display: inline-block; }
 .lg-green { background: #2e9e4f; }

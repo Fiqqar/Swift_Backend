@@ -18,6 +18,7 @@ dependencies = [
     "pyjwt>=2.13.0",
     "cloudinary>=1.45.0",
     "google-genai>=1.14.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [dependency-groups]

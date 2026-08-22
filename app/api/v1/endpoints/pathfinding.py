@@ -1,16 +1,18 @@
 import asyncio
-import logging
 import math
 import os
 from time import perf_counter
 
+from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from fastapi import APIRouter, HTTPException, Request
-
+from app.core.logging import get_logger
+from app.core.metrics import (
+    pf_route_calc_duration_seconds,
+    pf_route_requests_total,
+)
 from app.schemas.pathfinding import (
     Coordinate,
-    DeliveryStop,
     GeofenceCheckRequest,
     GeofenceCheckResponse,
     OptimizedDeliveryLeg,
@@ -36,8 +38,8 @@ from app.services.pathfinding.core_a_star import (
 )
 from app.services.pathfinding.core_engine import route as engine_route
 from app.services.pathfinding.graph_loader import (
-    AreaNotCoveredError,
     _LOCAL_ROUTE_MAX_M,
+    AreaNotCoveredError,
     base_available,
     find_nearest_node,
     hierarchical_available,
@@ -52,7 +54,6 @@ from app.services.pathfinding.hierarchical import (
     build_hierarchical,
     route_hierarchical,
 )
-from app.services.pathfinding.snap import log_snap, snap_point_to_graph
 from app.services.pathfinding.route_options import (
     bump_penalties,
     max_overlap,
@@ -62,6 +63,7 @@ from app.services.pathfinding.route_options import (
     route_incidents,
     route_summary,
 )
+from app.services.pathfinding.snap import log_snap, snap_point_to_graph
 from app.services.polyline import encode_polyline
 from app.services.tracking import (
     get_kurir_position_latlon,
@@ -71,7 +73,7 @@ from app.services.traffic.smart_hybrid import get_request_penalties
 
 router = APIRouter()
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("routing")
 
 _COVER_MARGIN = 600.0
 _MAX_SNAP_DIST = float(os.environ.get("MAX_SNAP_DIST", "1500"))
@@ -670,22 +672,45 @@ async def find_route(payload: RouteRequest, request: Request):
     lat1, lon1 = payload.origin.latitude, payload.origin.longitude
     lat2, lon2 = payload.destination.latitude, payload.destination.longitude
     mode = _normalize_mode(payload)
+    
+    logger.info("route.requested", origin=(lat1, lon1), destination=(lat2, lon2), mode=mode)
+    
     try:
         plan = await run_in_threadpool(
             _resolve_plan, request.app, lat1, lon1, lat2, lon2)
     except AreaNotCoveredError as e:
+        pf_route_requests_total.labels(mode=mode, status="area_not_covered").inc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
+        pf_route_requests_total.labels(mode=mode, status="error").inc()
+        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {e!s}")
 
     redis = getattr(request.app.state, "redis", None)
     traffic_penalties = await get_request_penalties(
         request.app, redis, (lat1, lon1), (lat2, lon2))
+    
+    calc_start = perf_counter()
     response, _node_sequence, final_penalties, mode = await _best_route(
         request.app, plan, redis, traffic_penalties, payload, mode,
         lat1, lon1, lat2, lon2)
-
+    calc_duration = perf_counter() - calc_start
     
+    if response:
+        source = getattr(plan[1], 'source', 'unknown') if isinstance(plan, tuple) else 'unknown'
+        pf_route_calc_duration_seconds.labels(mode=mode, source=source).observe(calc_duration)
+        pf_route_requests_total.labels(mode=mode, status="success").inc()
+        logger.info("route.calculated", 
+            route_id=response.route_id,
+            distance_m=response.total_distance_meters,
+            duration_s=response.estimated_time_seconds,
+            source=source,
+            graph_nodes=len(plan[1].graph) if hasattr(plan[1], 'graph') else 0,
+            latency_ms=round(calc_duration * 1000, 2))
+    else:
+        pf_route_requests_total.labels(mode=mode, status="not_found").inc()
+        logger.warning("route.not_found", origin=(lat1, lon1), destination=(lat2, lon2), mode=mode)
+        raise HTTPException(status_code=404, detail="Rute tidak ditemukan!")
+
     if live_tracking_enabled() or dynamic_rerouting_enabled(payload):
         request.app.state.active_route = {
             "dest": (lat2, lon2),
@@ -717,7 +742,6 @@ async def find_route(payload: RouteRequest, request: Request):
             }],
         })
     return response
-
 
 def _route_option(route_id: int, response, node_sequence,
                   final_penalties, edge_classes,
@@ -771,7 +795,7 @@ async def find_route_options(payload: RouteRequest, request: Request):
     except AreaNotCoveredError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Gagal memuat peta: {e!s}")
 
     redis = getattr(request.app.state, "redis", None)
     traffic_penalties = await get_request_penalties(
@@ -949,8 +973,8 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     ordered = [stops[i] for i in order]
 
     incident_delay_minutes = max(0.0, _env_float("INCIDENT_DELAY_MINUTES", 3.0))
-    from app.services.traffic.poller import _reference_graph
     from app.services.traffic.eta import eta_config
+    from app.services.traffic.poller import _reference_graph
     eta_graph, eta_locations = _reference_graph(request.app)
     speed_kmh = eta_config()["mode_speed_kmh"]
 

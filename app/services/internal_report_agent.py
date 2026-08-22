@@ -19,7 +19,6 @@ Kontrak:
 
 import asyncio
 import json
-import logging
 import math
 import os
 import re
@@ -31,9 +30,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
+from app.core.logging import get_logger
 from app.models.driver_report import DriverReport
-from app.services import ai_agent
-from app.services import rag_traffic
+from app.services import ai_agent, rag_traffic
 from app.services.geocode import geocode_address
 from app.services.navigation import (
     AUTO_REROUTE,
@@ -45,7 +44,7 @@ from app.services.navigation import (
 )
 from app.services.polyline import encode_polyline
 
-logger = logging.getLogger("pathfinding")
+logger = get_logger("reports")
 
 # ---------------------------------------------------------------------------
 # Konfigurasi (dibaca saat import, pola sama seperti rag_traffic).

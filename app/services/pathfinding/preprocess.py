@@ -22,6 +22,7 @@ class PathGraph:
     warning: str | None = None
     bbox: tuple | None = None
     edge_classes: dict | None = None
+    edge_names: dict | None = None
     _alt_k: int = 0
 
 
@@ -344,7 +345,8 @@ def is_directed(graph: dict) -> bool:
 def build_path_graph(graph, locations, ref_lat, ref_lon,
                      landmarks_k: int = 8, enable_ch: bool = True,
                      max_witness_nodes: int | None = None,
-                     edge_classes: dict | None = None) -> PathGraph:
+                     edge_classes: dict | None = None,
+                     edge_names: dict | None = None) -> PathGraph:
     geo = precompute_geo(locations)
     directed = is_directed(graph)
     ch = None
@@ -354,4 +356,4 @@ def build_path_graph(graph, locations, ref_lat, ref_lon,
     landmark_dists: list = []
     return PathGraph(graph, locations, geo, ref_lat, ref_lon,
                      landmarks, landmark_dists, ch, directed,
-                     edge_classes=edge_classes, _alt_k=landmarks_k)
+                     edge_classes=edge_classes, edge_names=edge_names, _alt_k=landmarks_k)
