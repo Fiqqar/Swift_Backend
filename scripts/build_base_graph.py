@@ -92,8 +92,9 @@ def main() -> None:
 
     tmp = out_path + ".tmp"
     import pickle
+    from app.services.pathfinding.graph_loader import _serialize_pg
     with open(tmp, "wb") as fh:
-        pickle.dump(pg, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(_serialize_pg(pg), fh, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(tmp, out_path)
     print("=== Selesai dalam %.0f detik ===" % (time.perf_counter() - t0))
     print("  node    : %d" % len(pg.graph))
