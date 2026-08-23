@@ -15,6 +15,49 @@
 .login-actions .btn { flex: 1; white-space: nowrap; }
 #ws-status { margin-top: 6px; }
 
+/* --- Test Mode: Off-Route Auto-Reroute ---------------------------- */
+#reroute-test-status { font-size: 12px; line-height: 1.4; }
+.reroute-circle { pointer-events: none; }
+.reroute-circle path { transition: stroke-opacity 0.3s, fill-opacity 0.3s; }
+
+/* --- Toast Notifications ------------------------------------------- */
+#toasts {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  min-width: 260px;
+  max-width: 360px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.18);
+  font-size: 13px;
+  line-height: 1.4;
+  animation: toast-in 0.25s ease-out;
+  background: #1f2933;
+  color: #fff;
+  border-left: 4px solid #0f6dc1;
+}
+.toast.success { border-left-color: #1e7e34; }
+.toast.warning { border-left-color: #f0ad4e; }
+.toast.error { border-left-color: #b3372f; }
+.toast.info { border-left-color: #0f6dc1; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.toast.fade-out { animation: toast-out 0.3s ease-in forwards; }
+@keyframes toast-out {
+  to { opacity: 0; transform: translateY(-8px); }
+}
+
 /* --- Responsive (layar kecil / HP / tablet) ---------------------------- */
 @media (max-width: 1024px) {
   #panel { width: 100%; max-width: none; border-left: 0; border-top: 1px solid #d7dde3; }

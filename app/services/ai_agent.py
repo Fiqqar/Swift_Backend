@@ -53,7 +53,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 AI_REROUTE_ENABLED = _env_bool("AI_REROUTE_ENABLED", False)
-GEMINI_REROUTE_TIMEOUT_S = _env_float("GEMINI_REROUTE_TIMEOUT_S", 2.0)
+GEMINI_REROUTE_TIMEOUT_S = _env_float("GEMINI_REROUTE_TIMEOUT_S", 15.0)
 
 _MAX_TOOL_ROUNDS = 6
 _CONGESTION_RATIO = 1.5
@@ -495,11 +495,12 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 
 def _generate_once(client, model: str, contents, config) -> object:
-    return client.models.generate_content(model, contents, config=config)
+    return client.models.generate_content(model=model, contents=contents, config=config)
 
 
 async def _call_model(primary, backup, model: str, contents, config) -> object:
-    """Panggil Gemini; bila key primer kena rate-limit, pakai key cadangan."""
+    """Panggil Gemini; bila key primer kena rate-limit, pakai key cadangan.
+    Jika keduanya habis (429 RESOURCE_EXHAUSTED), kembalikan None untuk fallback deterministik."""
     try:
         return await run_in_threadpool(
             _generate_once, primary, model, contents, config)
@@ -508,6 +509,10 @@ async def _call_model(primary, backup, model: str, contents, config) -> object:
             logger.warning("[AI] Rate limit key 1, memakai key cadangan.")
             return await run_in_threadpool(
                 _generate_once, backup, model, contents, config)
+        # 429 RESOURCE_EXHAUSTED (quota habis) -> fallback deterministik
+        if _is_rate_limit(exc) and backup is None:
+            logger.error("[AI] Kedua key habis (429 RESOURCE_EXHAUSTED). Fallback ke logika deterministik.")
+            return None
         raise
 
 
@@ -562,15 +567,16 @@ async def _agent_loop(ctx: ToolContext, context: dict, hint: str) -> dict | None
 
 
 async def decide_reroute(context: dict, decision_hint: str, *,
-                         app=None, redis=None, session=None) -> dict | None:
+                          app=None, redis=None, session=None) -> dict | None:
     """Putuskan apakah reroute layak. Kembalikan None sebagai sinyal fallback.
 
     Fallback dipicu bila:
     - `AI_REROUTE_ENABLED` = False, atau
     - `GEMINI_API_KEY` kosong, atau
     - circuit breaker sedang terbuka (kegagalan beruntun), atau
-    - error / timeout (batas `GEMINI_REROUTE_TIMEOUT_S`, default 2.0s), atau
+    - error / timeout (batas `GEMINI_REROUTE_TIMEOUT_S`, default 15.0s), atau
     - slot semaphore konkuransi penuh melebihi timeout.
+    - quota AI habis (429 RESOURCE_EXHAUSTED) pada kedua key.
     """
     if not AI_REROUTE_ENABLED or not GEMINI_API_KEY:
         return None

@@ -52,10 +52,38 @@
   }
   function hideNotice() { $('notice').textContent = ''; $('notice').className = ''; }
 
+  function showToast(msg, type) {
+    var container = $('toasts');
+    if (!container) return;
+    var el = document.createElement('div');
+    el.className = 'toast ' + (type || 'info');
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(function () {
+      el.classList.add('fade-out');
+      setTimeout(function () { el.remove(); }, 300);
+    }, 4000);
+  }
+
   function setBadge(id, label, state) {
     var el = $(id);
     el.textContent = label;
     el.className = 'badge ' + (state || '');
+  }
+
+  function haversineDistance(coord1, coord2) {
+    var R = 6371000; // Earth radius in meters
+    var lat1 = coord1[0] * Math.PI / 180;
+    var lon1 = coord1[1] * Math.PI / 180;
+    var lat2 = coord2[0] * Math.PI / 180;
+    var lon2 = coord2[1] * Math.PI / 180;
+    var dLat = lat2 - lat1;
+    var dLon = lon2 - lon1;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1) * Math.cos(lat2) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
   }
 
   async function parseJson(resp) {
@@ -98,6 +126,13 @@
   var auth = { token: localStorage.getItem('delivery_token') || '', kurir: null };
   var posWs = null, geoWatchId = null, webhookActive = false;
 
+  // Test Mode: Off-Route Auto-Reroute
+  var testRerouteMode = false;
+  var testRerouteCircle = null;
+  var testRerouteLastClick = 0;
+  var testRerouteDebounceMs = 1500;
+  var navSimPaused = false;
+
   var iconColors = {
     hub: '#0f2a43',
     regular: '#1e7e34',
@@ -109,6 +144,101 @@
       html: '<div style="background:' + bg + ';border:2px solid #fff;border-radius:50%;width:22px;height:22px;color:#fff;font-weight:700;font-size:11px;line-height:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.5);">' + text + '</div>',
       className: '', iconSize: [22, 22], iconAnchor: [11, 11]
     });
+  }
+
+  // --- Test Mode: Off-Route Auto-Reroute Helpers -------------------
+  function enableTestRerouteMode() {
+    if (!navWs || navWs.readyState !== WebSocket.OPEN) {
+      showNotice('Navigasi WS belum terhubung. Klik "Mulai Navigasi" dulu.');
+      $('inp-mode-hub').checked = true; // Reset to hub
+      return false;
+    }
+    testRerouteMode = true;
+    navSimPaused = false;
+    if (navSimTimer) {
+      clearInterval(navSimTimer);
+      navSimTimer = null;
+      navSimPaused = true;
+    }
+    $('reroute-test-status').style.display = 'block';
+    // Add circle overlay at current position
+    if (curPos) addTestRerouteCircle(curPos[0], curPos[1]);
+    // Enable test mode radio
+    $('inp-mode-reroute_test').disabled = false;
+    log('Test mode aktif: klik peta untuk trigger off-route auto-reroute');
+    return true;
+  }
+
+  function disableTestRerouteMode() {
+    testRerouteMode = false;
+    if (testRerouteCircle) {
+      map.removeLayer(testRerouteCircle);
+      testRerouteCircle = null;
+    }
+    $('reroute-test-status').style.display = 'none';
+    $('inp-mode-reroute_test').disabled = true;
+    // Resume simulation from last position
+    if (navSimPaused && navRouteCoords && navSimIdx < navRouteCoords.length) {
+      navSimulate();
+      navSimTimer = setInterval(navSimulate, 4000);
+      navSimPaused = false;
+    }
+    log('Test mode nonaktif: simulasi dilanjutkan');
+  }
+
+  function addTestRerouteCircle(lat, lon) {
+    if (testRerouteCircle) map.removeLayer(testRerouteCircle);
+    var radius = 50; // meters
+    testRerouteCircle = L.circle([lat, lon], {
+      radius: radius,
+      color: '#ff6b35',
+      fillColor: '#ff6b35',
+      fillOpacity: 0.15,
+      weight: 2,
+      dashArray: '6 4',
+      className: 'reroute-circle'
+    }).addTo(map);
+  }
+
+  function updateTestRerouteCircle(lat, lon) {
+    if (testRerouteCircle) {
+      testRerouteCircle.setLatLng([lat, lon]);
+    }
+  }
+
+  function removeTestRerouteCircle() {
+    if (testRerouteCircle) {
+      map.removeLayer(testRerouteCircle);
+      testRerouteCircle = null;
+    }
+  }
+
+  function sendTestReroutePosition(lat, lon) {
+    if (!navWs || navWs.readyState !== WebSocket.OPEN) return;
+    var now = Date.now();
+    if (now - testRerouteLastClick < testRerouteDebounceMs) return;
+    testRerouteLastClick = now;
+
+    // Update visual marker (orange for test mode)
+    if (posMarker) map.removeLayer(posMarker);
+    posMarker = L.marker([lat, lon], {
+      icon: L.divIcon({
+        html: '<div style="background:#ff6b35;border:2px solid #fff;border-radius:50%;width:16px;height:16px;box-shadow:0 1px 4px rgba(0,0,0,.5);"></div>',
+        className: '', iconSize: [16, 16], iconAnchor: [8, 8]
+      })
+    }).addTo(map).bindTooltip('Test: Off-Route Position').openTooltip();
+
+    // Update circle overlay
+    updateTestRerouteCircle(lat, lon);
+
+    // Send location_update to navigation WS
+    navWs.send(JSON.stringify({
+      type: 'location_update',
+      lat: lat, lng: lon,
+      current_route_id: navRouteId,
+      test_mode: true
+    }));
+    log('Test off-route: kirim position (' + lat.toFixed(5) + ', ' + lon.toFixed(5) + ') ke nav WS');
   }
 
   function placeHub(latlng) {
@@ -371,6 +501,90 @@
     $('sheet-list').innerHTML = '';
   }
 
+  // Clear only navigation-related polylines (keep markers and route sheet)
+  function clearOldPolylines() {
+    legLines.forEach(function (l) { map.removeLayer(l); });
+    legLines = [];
+    if (navRouteLayer) { map.removeLayer(navRouteLayer); navRouteLayer = null; }
+    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+  }
+
+  // Draw reordered route with proper active/remaining leg styling
+  function drawReorderedRoute(data) {
+    // data should contain: legs (with geometry), stops, active_leg_index, current_position
+    clearOldPolylines();
+
+    var group = L.layerGroup().addTo(map);
+    var allBounds = null;
+    var legs = data.legs || [];
+    var stops = data.stops || [];
+    var activeLegIndex = data.active_leg_index || 0;
+    var currentPos = data.current_position;
+
+    // If current_position is provided and legs exist, prepend it to first leg
+    var legsToDraw = legs;
+    if (data.current_position && legs.length > 0) {
+        var firstLeg = legs[0];
+        if (firstLeg.geometry) {
+            var firstCoords = decodePolyline(firstLeg.geometry);
+            var currentPosCoord = [data.current_position[0], data.current_position[1]];
+            // Check if first coordinate matches current position (approximately)
+            if (firstCoords.length > 0) {
+                var firstCoord = firstCoords[0];
+                var dist = haversineDistance(currentPosCoord, firstCoord);
+                if (dist > 50) { // More than 50m difference, prepend current position
+                    // We need to rebuild the first leg geometry with current position prepended
+                    // For simplicity, we'll just use the geometry as-is and let the active leg start from current position visually
+                }
+            }
+        }
+
+    var group = L.layerGroup().addTo(map);
+    var allBounds = null;
+
+    legs.forEach(function (leg, i) {
+        var coords = decodePolyline(leg.geometry || '');
+        if (!coords.length) return;
+        var isActive = (i === activeLegIndex);
+        var isDone = (i < activeLegIndex);
+
+        var poly = L.polyline(coords, {
+            color: isActive ? '#b3372f' : (isDone ? '#8b9aab' : '#0f6dc1'), // Red dashed for active, gray for done, blue for upcoming
+            weight: isActive ? 6 : (isDone ? 3 : 5),
+            opacity: isActive ? 0.95 : (isDone ? 0.6 : 0.9),
+            dashArray: isActive ? '8 6' : (isDone ? '6 6' : null),
+            pane: 'route'
+        }).addTo(group);
+        legLines.push(poly);
+        if (!allBounds) allBounds = poly.getBounds();
+        else allBounds.extend(poly.getBounds());
+    });
+
+    // Draw stop markers with updated stop_order
+    stops.forEach(function (s, i) {
+        var color = s.service_type === 'EXPRESS' ? iconColors.express : iconColors.regular;
+        var m = L.marker([s.latitude, s.longitude], {
+            icon: numberedIcon(String(s.stop_order), color)
+        }).addTo(group)
+            .bindTooltip((s.recipient_name || ('Paket ' + (s.package_id || s.stop_order))) +
+                (s.service_type === 'EXPRESS' ? ' · EXPRESS' : ''));
+        stopMarkers.push(m);
+        if (!allBounds) allBounds = m.getBounds();
+        else allBounds.extend(m.getBounds());
+    });
+
+if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
+    
+    // Update state and UI
+    state = { stops: data.stops, legs: data.legs };
+    activeIndex = data.active_leg_index || 0; // Use active_leg_index from payload
+    renderRouteSheet({ stops: data.stops, legs: data.legs });
+    renderNav({ stops: data.stops, legs: data.legs });
+  }
+}
+
+
+  // Original drawOverview function for backward compatibility
   function drawOverview(data) {
     clearMapLayers();
     var group = L.layerGroup().addTo(map);
@@ -406,10 +620,13 @@
     routeLayer = group;
     if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
     renderRouteSheet(data);
+
     renderNav(data);
   }
 
-  function renderRouteSheet(data) {
+
+
+function renderRouteSheet(data) {
     var listEl = $('sheet-list');
     var list = '';
     data.stops.forEach(function (s, i) {
@@ -500,9 +717,14 @@
     // NEW: Leg context for multi-stop
     if (data.leg_context != null) {
       var legCtx = data.leg_context;
-      $('nav-leg-info').textContent = 'Stop ' + legCtx.stop_sequence + ' / ' + legCtx.total_legs;
-      if (legCtx.recipient_name) {
-        $('nav-recipient').textContent = legCtx.recipient_name;
+      var legInfoEl = $('nav-leg-info');
+      var recipientEl = $('nav-recipient');
+      if (legInfoEl) {
+        legInfoEl.style.display = 'block';
+        legInfoEl.textContent = 'Stop ' + legCtx.stop_sequence + ' / ' + legCtx.total_legs;
+      }
+      if (recipientEl) {
+        recipientEl.textContent = legCtx.recipient_name || '';
       }
     }
     // NEW: Next maneuver
@@ -587,6 +809,7 @@
   }
 
   function stopNavigation() {
+    if (testRerouteMode) disableTestRerouteMode();
     if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
     if (navWs) { try { navWs.close(); } catch (e) {} navWs = null; }
     if (navRouteLayer) { map.removeLayer(navRouteLayer); navRouteLayer = null; }
@@ -603,6 +826,10 @@
 
   function startNavigation() {
     if (!navRouteId || navConnecting) return;
+    if (!auth.token) {
+      showNotice('Login dulu untuk navigasi (perlu token autentikasi).');
+      return;
+    }
     // Hentikan navigasi lama kalau ada, tapi jangan reset navRouteId
     if (navSimTimer || (navWs && navWs.readyState === WebSocket.OPEN)) {
       if (navSimTimer) { clearInterval(navSimTimer); navSimTimer = null; }
@@ -613,7 +840,7 @@
     navConnecting = true;
     navInd('Navigasi: menghubungkan...');
     var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation');
+    navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation?token=' + encodeURIComponent(auth.token));
     navWs.onopen = function () {
       sendNav({ type: 'start_navigation', route_id: navRouteId, leg_index: activeIndex });
     };
@@ -640,6 +867,7 @@
         if (navSimTimer) clearInterval(navSimTimer);
         navSimulate();
         navSimTimer = setInterval(navSimulate, 4000);
+        checkNavStatus();
         return;
       }
       if (msg.type === 'route_progress') setNavProgress(msg);
@@ -648,7 +876,100 @@
         if (maneuver) showNextManeuver(maneuver);
       }
       if (msg.type === 'off_route_warning') {
-        navInd('Di luar rute (' + Math.round(msg.distance_m) + ' m dari jalur)', 'offroute');
+        var dist = Math.round(msg.distance_m);
+        var thr = msg.threshold_m;
+        navInd('Di luar rute (' + dist + ' m > ' + thr + ' m)', 'offroute');
+        if (testRerouteMode) {
+          var statusEl = $('reroute-test-status');
+          if (statusEl) {
+            statusEl.textContent = 'Mode Test: Off-route ' + dist + 'm (threshold ' + thr + 'm). Coba klik lebih jauh untuk trigger auto-reroute.';
+            statusEl.style.color = dist > thr ? '#b3372f' : '#f0ad4e';
+          }
+        }
+      }
+      if (msg.type === 'stops_reordered') {
+        // Update route sheet with new order
+        if (msg.new_stop_order && state) {
+          // Rebuild state.stops from new order
+          var newStops = msg.new_stop_order.map(function(s) {
+            return {
+              stop_order: s.stop_order,
+              package_id: s.package_id,
+              recipient_name: s.recipient_name,
+              service_type: s.service_type,
+              latitude: s.dest[0],
+              longitude: s.dest[1],
+              alamat: ''
+            };
+          });
+          state.stops = newStops;
+          
+          // Use new drawReorderedRoute if full legs data is available
+          if (msg.legs && msg.legs.length > 0) {
+            // New payload format with full legs geometries
+            drawReorderedRoute({
+              legs: msg.legs,
+              stops: state.stops,
+              active_leg_index: msg.active_leg_index || 0,
+              current_position: msg.current_position
+            });
+            log('Stops re-ordered with full geometries: ' + msg.new_stop_order.map(function(s) { return s.package_id; }).join(' → '));
+          } else {
+            // Fallback to old format
+            drawOverview(state);
+            log('Stops re-ordered: ' + msg.new_stop_order.map(function(s) { return s.package_id; }).join(' → '));
+          }
+        }
+        if (msg.active_leg_changed && msg.polyline) {
+          redrawNavPolyline(msg.polyline);
+          navRouteCoords = decodePolyline(msg.polyline || '');
+          navSimIdx = 0;
+        }
+        
+        // Handle active stop switch (major re-order)
+        if (msg.active_stop_switched) {
+          var switchedTo = msg.switched_to;
+          var switchedFrom = msg.switched_from;
+          
+          // Show prominent notification with sound
+          var notifMsg = '🔄 ACTIVE STOP SWITCHED: ' + 
+            (switchedFrom?.recipient_name || 'Stop ' + activeIndex) + ' → ' + 
+            (switchedTo?.recipient_name || 'New Stop');
+          
+          showToast(notifMsg, 'error'); // error type = red, prominent
+          
+          // Play notification sound if available
+          try {
+            var audio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAD//w=='); // Short beep
+            audio.volume = 0.5;
+            audio.play().catch(function() {}); // Ignore autoplay restrictions
+          } catch (e) {}
+          
+          // Update nav status indicator
+          navInd('Active stop switched: ' + (switchedTo?.recipient_name || 'New stop'), 'warn');
+          
+          // Log detailed switch info
+          log('ACTIVE STOP SWITCHED: ' + (switchedFrom?.recipient_name || 'Unknown') + 
+              ' → ' + (switchedTo?.recipient_name || 'Unknown') + 
+              ' (reason: ' + (msg.reorder_reason || 'off_route_major_switch_active') + ')');
+          
+          // Update activeIndex to match new active leg
+          // The backend already incremented leg_index, so activeIndex should match
+          if (state && state.stops.length > 0) {
+            // Find the index of the new active stop
+            var newActiveIdx = state.stops.findIndex(function(s) { 
+              return s.package_id === switchedTo?.package_id; 
+            });
+            if (newActiveIdx >= 0) {
+              activeIndex = newActiveIdx;
+              drawOverview(state);
+            }
+          }
+        } else if (msg.reorder_reason === 'off_route_closer_to_next_stop') {
+          showToast('Urutan stop diubah otomatis: ' + (msg.reorder_reason || 'off_route_closer_to_next_stop'), 'warning');
+        } else {
+          showToast('Urutan stop diubah otomatis: ' + (msg.reorder_reason || 'off_route_closer_to_next_stop'), 'warning');
+        }
       }
       if (msg.type === 'auto_rerouted' || msg.type === 'reroute_available') {
         navInd('Rute baru leg ' + (msg.leg_index + 1) + ' (hemat ' + Math.round(msg.saving_s) + ' dtk)', 'active');
@@ -711,6 +1032,13 @@
       navStatus = { enabled: false };
     }
     navInd(navStatus.enabled ? 'Navigasi: siap' : 'Navigasi: nonaktif (ENABLE_LIVE_NAVIGATION=0)');
+    // Enable test mode radio only when navigation WS is connected
+    var testRadio = $('inp-mode-reroute_test');
+    if (testRadio) {
+      // Use local session state: navRouteId exists AND navWs is connected
+      var hasActiveRoute = !!(navRouteId && navWs && navWs.readyState === WebSocket.OPEN);
+      testRadio.disabled = !(navStatus.enabled && hasActiveRoute);
+    }
   }
 
   function buildPayload(remaining) {
@@ -930,6 +1258,16 @@
     var mode = document.querySelector('input[name="mode"]:checked').value;
     if (mode === 'hub') {
       placeHub(e.latlng);
+    } else if (mode === 'reroute_test') {
+      if (!testRerouteMode) {
+        if (!enableTestRerouteMode()) return;
+      }
+      if (!navRouteId) {
+        showNotice('Belum ada rute aktif. Optimasi rute dulu.');
+        disableTestRerouteMode();
+        return;
+      }
+      sendTestReroutePosition(e.latlng.lat, e.latlng.lng);
     } else {
       deviating = true;
       setCourierPosition(e.latlng.lat, e.latlng.lng, { deviate: true });
@@ -1019,6 +1357,35 @@
   $('sheet-close').addEventListener('click', function () {
     $('route-sheet').className = 'route-sheet';
   });
+
+  // Test mode radio button handler
+  var testRadio = $('inp-mode-reroute_test');
+  if (testRadio) {
+    testRadio.addEventListener('change', function () {
+      if (this.checked) {
+        if (!enableTestRerouteMode()) {
+          this.checked = false;
+          $('inp-mode-hub').checked = true;
+        }
+      } else {
+        disableTestRerouteMode();
+      }
+    });
+  }
+
+  // Hub/Deviate radio buttons - disable test mode when selected
+  var hubRadio = $('inp-mode-hub');
+  var deviateRadio = $('inp-mode-deviate');
+  if (hubRadio) {
+    hubRadio.addEventListener('change', function () {
+      if (this.checked && testRerouteMode) disableTestRerouteMode();
+    });
+  }
+  if (deviateRadio) {
+    deviateRadio.addEventListener('change', function () {
+      if (this.checked && testRerouteMode) disableTestRerouteMode();
+    });
+  }
 
   async function boot() {
     renderAuthUI();

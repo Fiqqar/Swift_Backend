@@ -43,6 +43,9 @@
   var routeInfoPopups = [];
   var nav = null;
 
+// Auth state (shared token from delivery page or localStorage)
+var auth = { token: localStorage.getItem('delivery_token') || '', kurir: null };
+
   function $(id) { return document.getElementById(id); }
   function log(msg) {
     $('log').textContent = (new Date().toLocaleTimeString()) + " " + msg;
@@ -567,10 +570,14 @@
 
   function startNavigation() {
     if (!navRouteId) return;
+    if (!auth.token) {
+      showNotice('Login dulu untuk navigasi (perlu token autentikasi).');
+      return;
+    }
     stopNavigation();
     navInd('Navigasi: menghubungkan...');
     var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation');
+    navWs = new WebSocket(proto + location.host + '/api/v1/ws/navigation?token=' + encodeURIComponent(auth.token));
     navWs.onopen = function () {
       sendNav({ type: 'start_navigation', route_id: navRouteId, leg_index: 0 });
     };
