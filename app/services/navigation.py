@@ -18,6 +18,7 @@ import time
 
 from app.core.logging import get_logger
 from app.services.ai_agent import AI_REROUTE_ENABLED
+from app.services.polyline import encode_polyline
 
 logger = get_logger("navigation")
 
@@ -52,6 +53,10 @@ REORDER_MIN_DISTANCE_SAVING_PCT = _env_float("REORDER_MIN_DISTANCE_SAVING_PCT", 
 REORDER_COOLDOWN_SECONDS = _env_float("REORDER_COOLDOWN_SECONDS", 60.0)
 MAX_REORDERS_PER_ROUTE = int(os.environ.get("MAX_REORDERS_PER_ROUTE", "3"))
 REORDER_STABILITY_WINDOW = int(os.environ.get("REORDER_STABILITY_WINDOW", "2"))
+
+# Major Off-Route: switch active stop threshold
+OFF_ROUTE_MAJOR_THRESHOLD_M = _env_float("OFF_ROUTE_MAJOR_THRESHOLD_M", 300.0)
+REORDER_ACTIVE_SWITCH_DISTANCE_PCT = _env_float("REORDER_ACTIVE_SWITCH_DISTANCE_PCT", 40.0)
 
 
 class NavSession:
@@ -424,7 +429,8 @@ def advance_leg(session: NavSession, nav: dict) -> dict | None:
 async def maybe_reorder_stops_on_off_route(
     app, redis, session: NavSession,
     current_lat: float, current_lon: float,
-    off_route_distance_m: float
+    off_route_distance_m: float,
+    test_mode: bool = False
 ) -> bool:
     """
     Evaluate and potentially re-order remaining stops when courier goes off-route.
@@ -438,17 +444,33 @@ async def maybe_reorder_stops_on_off_route(
     if session.kind != "multi" or session.leg_index >= session.total_legs - 1:
         return False
     
-    # 2. Check off-route threshold for re-ordering (higher than warning threshold)
-    if off_route_distance_m <= OFF_ROUTE_REORDER_THRESHOLD_M:
+    # Test mode thresholds (bypass distance checks for easy testing)
+    reorder_threshold = -1.0 if test_mode else OFF_ROUTE_REORDER_THRESHOLD_M
+    major_threshold = 80.0 if test_mode else OFF_ROUTE_MAJOR_THRESHOLD_M
+    active_switch_pct = 20.0 if test_mode else REORDER_ACTIVE_SWITCH_DISTANCE_PCT
+    min_saving_pct = 20.0 if test_mode else REORDER_MIN_DISTANCE_SAVING_PCT
+    
+    # 1. Only for multi-leg routes with remaining stops
+    if session.kind != "multi" or session.leg_index >= session.total_legs - 1:
         return False
     
-    # 3. Cooldown check
+    # 2. Check off-route threshold for re-ordering (higher than warning threshold)
+    if off_route_distance_m <= reorder_threshold:
+        return False
+    
+    # 3. Cooldown check (bypass in test mode)
     now = time.time()
-    if now < session.reorder_cooldown_until:
+    if not test_mode and now < session.reorder_cooldown_until:
+        logger.info(
+            "[NAV] Re-order rejected: cooldown active (%.0fs remaining)",
+            session.reorder_cooldown_until - now)
         return False
     
     # 4. Max re-orders per route limit
     if session.reorder_count >= MAX_REORDERS_PER_ROUTE:
+        logger.info(
+            "[NAV] Re-order rejected: max reorders reached (%d/%d)",
+            session.reorder_count, MAX_REORDERS_PER_ROUTE)
         return False
     
     # 5. Get remaining stops from Redis snapshot
@@ -463,7 +485,7 @@ async def maybe_reorder_stops_on_off_route(
     
     # 6. Prepare stops data for optimizer
     stops_coords = [(leg["dest"][0], leg["dest"][1]) for leg in remaining_legs]
-    service_types = [leg["service_type"] for leg in remaining_legs]
+    service_types = [leg.get("service_type", "REGULAR") for leg in remaining_legs]
     package_ids = [leg["package_id"] for leg in remaining_legs]
     recipient_names = [leg["recipient_name"] for leg in remaining_legs]
     
@@ -498,19 +520,29 @@ async def maybe_reorder_stops_on_off_route(
         # Reset stability window
         session._reorder_candidate = None
         session._reorder_candidate_count = 0
-        return False
+        if not test_mode:
+            return False
+        # In test_mode: continue to force reorder to nearest stop
     
-    # 10. Stability window / anti-flicker: require N consecutive same candidate
-    if session._reorder_candidate == new_order:
-        session._reorder_candidate_count += 1
+    # 10. Stability window / anti-flicker: require N consecutive same candidate (bypass in test mode)
+    if not test_mode:
+        if session._reorder_candidate == new_order:
+            session._reorder_candidate_count += 1
+        else:
+            session._reorder_candidate = new_order
+            session._reorder_candidate_count = 1
+        
+        if session._reorder_candidate_count < REORDER_STABILITY_WINDOW:
+            logger.info(
+                "[NAV] Re-order rejected: stability window not met (%d/%d, candidate=%s)",
+                session._reorder_candidate_count, REORDER_STABILITY_WINDOW, new_order)
+            return False
     else:
+        # Test mode: reset stability counter, allow immediate re-order
         session._reorder_candidate = new_order
         session._reorder_candidate_count = 1
     
-    if session._reorder_candidate_count < REORDER_STABILITY_WINDOW:
-        return False
-    
-    # 11. Verify distance savings >= 20%
+    # 11. Verify distance savings >= threshold (lower in test mode)
     # Compute total road distance for current order vs new order
     async def _total_distance_for_order(order_indices: list[int]) -> float:
         total = 0.0
@@ -529,17 +561,137 @@ async def maybe_reorder_stops_on_off_route(
         logger.warning("[NAV] Distance comparison failed: %s", exc)
         return False
     
-    if old_total_dist <= 0:
-        return False
+    # Calculate distance savings percentage
+    saving_pct = ((old_total_dist - new_total_dist) / old_total_dist * 100) if old_total_dist > 0 else 0.0
     
-    saving_pct = ((old_total_dist - new_total_dist) / old_total_dist) * 100.0
-    if saving_pct < REORDER_MIN_DISTANCE_SAVING_PCT:
+    # 12. Determine re-order type: standard (remaining only) vs major (switch active stop)
+    # Calculate distance to current active stop
+    current_active_dest = session.dest
+    dist_to_current_active = float('inf')
+    if current_active_dest:
+        from app.services.pathfinding.core_a_star import haversine_distance
+        dist_to_current_active = haversine_distance(
+            (current_lat, current_lon), current_active_dest)
+    
+    # Distance to new first stop after re-order
+    new_first_stop_coord = stops_coords[new_order[0]]
+    dist_to_new_first = haversine_distance(
+        (current_lat, current_lon), new_first_stop_coord)
+    
+    # 12. Determine re-order type: standard (remaining only) vs major (switch active stop)
+    # Calculate distance to current active stop
+    current_active_dest = session.dest
+    dist_to_current_active = float('inf')
+    if current_active_dest:
+        from app.services.pathfinding.core_a_star import haversine_distance
+        dist_to_current_active = haversine_distance(
+            (current_lat, current_lon), current_active_dest)
+    
+    # In test_mode: prioritize EXPRESS packages, then REGULAR
+    if test_mode:
+        # PRIORITY LOGIC: Check for EXPRESS packages first
+        express_indices = [i for i, st in enumerate(service_types) if st == "EXPRESS"]
+        regular_indices = [i for i, st in enumerate(service_types) if st != "EXPRESS"]
+        
+        if express_indices:
+            # Find nearest EXPRESS package by haversine distance from click position
+            min_dist = float('inf')
+            nearest_stop_idx = -1
+            for idx in express_indices:
+                d = haversine_distance((current_lat, current_lon), stops_coords[idx])
+                if d < min_dist:
+                    min_dist = d
+                    nearest_stop_idx = idx
+            logger.info(
+                "[NAV] Test mode: EXPRESS priority - selected nearest EXPRESS stop index=%d (pkg=%s, dist=%.0fm)",
+                nearest_stop_idx, package_ids[nearest_stop_idx] if nearest_stop_idx < len(package_ids) else "N/A", min_dist)
+        elif regular_indices:
+            # No EXPRESS remaining, find nearest REGULAR package
+            min_dist = float('inf')
+            nearest_stop_idx = -1
+            for idx in regular_indices:
+                d = haversine_distance((current_lat, current_lon), stops_coords[idx])
+                if d < min_dist:
+                    min_dist = d
+                    nearest_stop_idx = idx
+            logger.info(
+                "[NAV] Test mode: No EXPRESS remaining - selected nearest REGULAR stop index=%d (pkg=%s, dist=%.0fm)",
+                nearest_stop_idx, package_ids[nearest_stop_idx] if nearest_stop_idx < len(package_ids) else "N/A", min_dist)
+        else:
+            nearest_stop_idx = -1
+            min_dist = float('inf')
+        
+        # Force reorder to put nearest stop first
+        if nearest_stop_idx != -1:
+            new_order = [nearest_stop_idx] + [i for i in range(len(remaining_legs)) if i != nearest_stop_idx]
+            logger.info("[NAV] Test mode: re-ordered new_order to put nearest first: %s", new_order)
+        
+        # Force major reorder to switch active leg ONLY if nearest stop differs from current active
+        do_major_reorder = (nearest_stop_idx != 0)
+        first_stop_changed = (nearest_stop_idx != 0)
+        
+        # Log test mode decision
+        closer_pct = ((dist_to_current_active - min_dist) / dist_to_current_active * 100) if dist_to_current_active > 0 else 0
         logger.info(
-            "[NAV] Re-order rejected: saving %.1f%% < %.1f%% threshold",
-            saving_pct, REORDER_MIN_DISTANCE_SAVING_PCT)
-        return False
+            "[NAV] Test mode evaluation: test_mode=%s, off_route=%.0fm, nearest_stop_idx=%d, "
+            "dist_to_nearest=%.0fm, dist_to_current=%.0fm, do_major=%s",
+            test_mode, off_route_distance_m, nearest_stop_idx, min_dist, dist_to_current_active, do_major_reorder)
+    else:
+        # Normal mode: use existing logic
+        major_threshold = major_threshold if test_mode else OFF_ROUTE_MAJOR_THRESHOLD_M
+        active_switch_pct = active_switch_pct if test_mode else REORDER_ACTIVE_SWITCH_DISTANCE_PCT
+        
+        is_major_off_route = off_route_distance_m > major_threshold
+        is_new_stop_significantly_closer = (
+            dist_to_current_active > 0 and 
+            dist_to_new_first < dist_to_current_active * (1.0 - active_switch_pct / 100.0)
+        )
+        
+        do_major_reorder = is_major_off_route or is_new_stop_significantly_closer
+        
+        # Detailed debug logging with rejection/approval reasons
+        closer_pct = ((dist_to_current_active - dist_to_new_first) / dist_to_current_active * 100) if dist_to_current_active > 0 else 0
+        stability_info = f"{session._reorder_candidate_count}/{REORDER_STABILITY_WINDOW}" if not test_mode else "bypassed"
+        cooldown_active = now < session.reorder_cooldown_until and not test_mode
+        
+        logger.info(
+            "[NAV] Re-order evaluation: test_mode=%s, off_route=%.0fm, dist_current=%.0fm, dist_new=%.0fm, "
+            "closer_pct=%.1f%%, stability=%s, cooldown_active=%s, reorder_count=%d, "
+            "is_major_off_route=%s, is_closer=%.1f%% (threshold=%.1f%%), do_major=%s",
+            test_mode, off_route_distance_m, dist_to_current_active, dist_to_new_first,
+            closer_pct, stability_info, cooldown_active, session.reorder_count,
+            is_major_off_route, closer_pct, active_switch_pct, do_major_reorder)
+        
+        # If major re-order, auto-find nearest stop from current position
+        nearest_stop_idx = new_order[0]  # default to optimizer's first choice
+        if do_major_reorder and test_mode:
+            # Find nearest stop by haversine distance from current position
+            min_dist = float('inf')
+            for idx, coord in enumerate(stops_coords):
+                d = haversine_distance((current_lat, current_lon), coord)
+                if d < min_dist:
+                    min_dist = d
+                    nearest_stop_idx = idx
+            logger.info(
+                "[NAV] Test mode: auto-selected nearest stop index=%d (pkg=%s, dist=%.0fm)",
+                nearest_stop_idx, package_ids[nearest_stop_idx] if nearest_stop_idx < len(package_ids) else "N/A", min_dist)
+            # Override new_order to put nearest stop first
+            if nearest_stop_idx != new_order[0]:
+                new_order = [nearest_stop_idx] + [i for i in new_order if i != nearest_stop_idx]
+                logger.info("[NAV] Test mode: re-ordered new_order to put nearest first: %s", new_order)
+        
+        do_major_reorder = is_major_off_route or is_new_stop_significantly_closer
     
-    # 12. Apply re-order: rebuild legs in new order
+    # Log re-order type decision
+    logger.info(
+        "[NAV] Re-order type: %s (off_route=%.0fm, major_threshold=%.0fm, "
+        "dist_current=%.0fm, dist_new=%.0fm, closer_pct=%.1f%%)",
+        "MAJOR (switch active)" if do_major_reorder else "STANDARD (remaining only)",
+        off_route_distance_m, major_threshold,
+        dist_to_current_active, dist_to_new_first,
+        closer_pct)
+    
+    # 13. Apply re-order: rebuild legs in new order
     reordered_legs = []
     for new_idx, old_idx in enumerate(new_order):
         leg = remaining_legs[old_idx].copy()
@@ -553,9 +705,12 @@ async def maybe_reorder_stops_on_off_route(
     from app.services.tracking import set_nav_route
     await set_nav_route(redis, session.kurir_id, nav)
     
-    # 13. If first remaining stop changed, switch active polyline immediately
+    # 14. Handle active stop switch (major re-order) or standard re-order
     first_stop_changed = (new_order[0] != 0)
-    if first_stop_changed:
+    active_stop_switched = False
+    
+    if do_major_reorder and first_stop_changed:
+        # MAJOR RE-ORDER: Switch active stop to the new nearest stop
         new_first_leg = reordered_legs[0]
         from app.services.polyline import decode_polyline
         
@@ -563,6 +718,10 @@ async def maybe_reorder_stops_on_off_route(
         if len(new_coords) >= 2:
             new_dest = new_first_leg.get("dest")
             if new_dest:
+                # Store old active stop info for notification
+                old_package_id = session.current_package_id
+                old_recipient = session.current_recipient
+                
                 # Update session state for new active leg
                 session.coords = new_coords
                 session.dest = (float(new_dest[0]), float(new_dest[1]))
@@ -581,37 +740,125 @@ async def maybe_reorder_stops_on_off_route(
                 session.current_step_index = 0
                 session.traveled_distance_m = 0.0
                 
+                active_stop_switched = True
+                
                 logger.info(
-                    "[NAV] Re-order applied: kurir=%s new_stop=%s saving=%.1f%%",
+                    "[NAV] MAJOR RE-ORDER: kurir=%s active_stop_switched %s -> %s "
+                    "(off_route=%.0fm, dist_saving=%.1f%%, test_mode=%s, auto_nearest=%s)",
+                    session.kurir_id, old_package_id, new_first_leg.get("package_id"),
+                    off_route_distance_m, saving_pct, test_mode, nearest_stop_idx != new_order[0])
+    elif first_stop_changed:
+        # STANDARD RE-ORDER: Only first remaining stop changed, keep current active
+        new_first_leg = reordered_legs[0]
+        from app.services.polyline import decode_polyline
+        
+        new_coords = decode_polyline(new_first_leg.get("encoded") or "")
+        if len(new_coords) >= 2:
+            new_dest = new_first_leg.get("dest")
+            if new_dest:
+                # Update session state for new first remaining leg (NOT active yet)
+                # Note: we do NOT increment leg_index here, current active stop stays
+                # The new first leg will be the NEXT leg after current active completes
+                logger.info(
+                    "[NAV] STANDARD RE-ORDER: kurir=%s next_stop=%s saving=%.1f%%",
                     session.kurir_id, new_first_leg.get("package_id"), saving_pct)
     
-    # 14. Send re-order notification to client
+    # 15. Send re-order notification to client
     if session.ws is not None:
         try:
+            if active_stop_switched:
+                reorder_reason = "off_route_major_switch_active" + ("_test_auto_nearest" if test_mode else "")
+            else:
+                reorder_reason = "off_route_closer_to_next_stop" + ("_test" if test_mode else "")
+            
+            # Build legs with full geometries for frontend rendering
+            legs_with_geometry = []
+            
+            # Build all legs in new order with geometries
+            all_legs_in_order = []
+            if active_stop_switched:
+                # Active leg is the first leg (index 0): current position -> first stop
+                first_leg = reordered_legs[0]
+                remaining_legs = reordered_legs[1:]
+                all_legs_in_order = [first_leg] + remaining_legs
+            else:
+                # Standard reorder: current active stays, remaining legs reordered
+                # Current active leg stays as is, then reordered remaining legs
+                current_active_leg = legs[session.leg_index] if session.leg_index < len(legs) else None
+                remaining_legs = reordered_legs
+                if current_active_leg:
+                    all_legs_in_order = [current_active_leg] + remaining_legs
+                else:
+                    all_legs_in_order = remaining_legs
+            
+            # Build legs with geometries
+            # Active leg (index 0): from current position to first stop
+            if all_legs_in_order:
+                first_leg = all_legs_in_order[0]
+                first_leg_coords = session.coords if active_stop_switched else (session.coords if session.coords else [])
+                if first_leg_coords and len(first_leg_coords) >= 2:
+                    legs_with_geometry.append({
+                        "leg_index": 0,
+                        "geometry": encode_polyline(first_leg_coords, 5),
+                        "distance_km": round(sum(haversine_distance(first_leg_coords[i], first_leg_coords[i+1]) for i in range(len(first_leg_coords)-1)) / 1000.0, 2),
+                        "duration_mins": 0,  # Will be calculated if needed
+                    })
+            
+            # Remaining legs (index 1 onwards)
+            for idx, leg in enumerate(all_legs_in_order[1:], start=1):
+                # We need to get the geometry for this leg from the stored route
+                # For now, we'll use the encoded polyline from the leg if available
+                leg_geometry = leg.get("geometry") or leg.get("encoded") or ""
+                legs_with_geometry.append({
+                    "leg_index": idx,
+                    "geometry": leg_geometry,
+                    "distance_km": leg.get("distance_km", 0),
+                    "duration_mins": leg.get("duration_mins", 0),
+                })
+            
+            if active_stop_switched:
+                reorder_reason = "off_route_major_switch_active" + ("_test_auto_nearest" if test_mode else "")
+            else:
+                reorder_reason = "off_route_closer_to_next_stop" + ("_test" if test_mode else "")
+            
             await session.ws.send_json({
                 "type": "stops_reordered",
                 "ok": True,
                 "route_id": session.route_id,
-                "reorder_reason": "off_route_closer_to_next_stop",
+                "reorder_reason": reorder_reason,
                 "new_stop_order": [
                     {
                         "package_id": leg.get("package_id"),
                         "recipient_name": leg.get("recipient_name"),
-                        "service_type": leg.get("service_type"),
+                        "service_type": leg.get("service_type", "REGULAR"),
                         "stop_order": leg.get("stop_order"),
                         "dest": leg.get("dest"),
                     }
                     for leg in reordered_legs
                 ],
-                "active_leg_changed": first_stop_changed,
-                "polyline": encode_polyline(session.coords, 5) if first_stop_changed else None,
+                "legs": legs_with_geometry,
+                "active_leg_index": 0 if active_stop_switched else session.leg_index,
+                "current_position": [current_lat, current_lon] if active_stop_switched else None,
+                "active_leg_changed": active_stop_switched,
+                "active_stop_switched": active_stop_switched,
+                "switched_from": {
+                    "package_id": session.current_package_id if active_stop_switched else None,
+                    "recipient_name": session.current_recipient if active_stop_switched else None,
+                } if active_stop_switched else None,
+                "switched_to": {
+                    "package_id": new_first_leg.get("package_id") if active_stop_switched else None,
+                    "recipient_name": new_first_leg.get("recipient_name") if active_stop_switched else None,
+                    "dest": new_first_leg.get("dest") if active_stop_switched else None,
+                } if active_stop_switched else None,
+                "polyline": encode_polyline(session.coords, 5) if active_stop_switched else None,
                 "ts": int(time.time()),
             })
         except Exception as exc:
             logger.warning("[NAV] Failed to send reorder notification: %s", exc)
     
-    # 15. Update re-order state
-    session.reorder_cooldown_until = now + REORDER_COOLDOWN_SECONDS
+    # 16. Update re-order state (bypass cooldown in test mode)
+    if not test_mode:
+        session.reorder_cooldown_until = now + REORDER_COOLDOWN_SECONDS
     session.reorder_count += 1
     session._reorder_candidate = None
     session._reorder_candidate_count = 0
@@ -654,7 +901,6 @@ async def navigation_worker(app) -> None:
 
 
 async def _evaluate_session(app, session: NavSession) -> None:
-    from app.services.polyline import encode_polyline
 
     now = time.time()
     if session.route_id is None or session.dest is None:

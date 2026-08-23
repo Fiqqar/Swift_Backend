@@ -327,8 +327,9 @@ async def _handle_location_update(websocket: WebSocket, app,
                         })
                         # Dynamic stop re-ordering on off-route
                         from app.services.navigation import maybe_reorder_stops_on_off_route
+                        test_mode = msg.get("test_mode", False)
                         reordered = await maybe_reorder_stops_on_off_route(
-                            app, redis, session, lat, lon, dist)
+                            app, redis, session, lat, lon, dist, test_mode)
                         if reordered:
                             logger.info(
                                 "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
@@ -373,8 +374,9 @@ async def _handle_location_update(websocket: WebSocket, app,
                 })
                 # Dynamic stop re-ordering on off-route
                 from app.services.navigation import maybe_reorder_stops_on_off_route
+                test_mode = msg.get("test_mode", False)
                 reordered = await maybe_reorder_stops_on_off_route(
-                    app, redis, session, lat, lon, dist)
+                    app, redis, session, lat, lon, dist, test_mode)
                 if reordered:
                     logger.info(
                         "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
