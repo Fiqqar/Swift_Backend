@@ -242,6 +242,12 @@ async def _process_single_leg(app, redis, semaphore, leg_index: int,
         if eta_s is None:
             eta_s = compute_eta(eta_graph, eta_locations,
                                 response.route_coordinates, final_penalties)
+        if eta_s is None:
+            # Defensive fallback terakhir: pure travel time dari jarak fisik.
+            # compute_eta hanya mengembalikan None bila coords < 2 / speed <= 0;
+            # jangan pernah biarkan estimated_time_seconds null di respons API
+            # karena klien menghitung duration_mins dari field ini.
+            eta_s = distance_m / (speed_kmh / 3.6) if speed_kmh > 0 else 0.0
         incidents = route_incidents(
             node_sequence or [], response.route_coordinates,
             final_penalties, speed_kmh, incident_delay_minutes)
@@ -530,9 +536,40 @@ async def _compute_route(app, plan, redis, penalties,
         warning=pg.warning,
         graph_radius_meters=pg.radius,
         traffic_segments=_traffic_segments(node_sequence, penalties),
+        legs=_build_legs_from_response(pg, node_sequence, route_coords, lat1, lon1, lat2, lon2),
     )
     await set_route(redis, key, response.model_dump())
     return response, node_sequence
+
+
+def _build_legs_from_response(pg, node_sequence, route_coords, lat1, lon1, lat2, lon2):
+    """Build legs array with geometries for the response."""
+    from app.schemas.pathfinding import OptimizedDeliveryLeg
+    from app.services.pathfinding.core_a_star import haversine_distance
+    
+    if len(node_sequence) < 2:
+        return []
+    
+    legs = []
+    # Single leg for direct route (point to point)
+    total_distance = 0.0
+    for i in range(1, len(route_coords)):
+        total_distance += haversine_distance(route_coords[i - 1], route_coords[i])
+    
+    leg = OptimizedDeliveryLeg(
+        leg_index=0,
+        stop_sequence_number=1,
+        package_id=None,
+        recipient_name="",
+        geometry=route_coords,
+        distance_km=round(total_distance / 1000.0, 2),
+        duration_mins=0,
+        estimated_time_seconds=None,
+        traffic_segments=[],
+        incidents=[],
+        steps=[]
+    )
+    return [leg]
 
 
 def _normalize_mode(payload) -> str:

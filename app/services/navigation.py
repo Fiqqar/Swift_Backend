@@ -19,6 +19,7 @@ import time
 from app.core.logging import get_logger
 from app.services.ai_agent import AI_REROUTE_ENABLED
 from app.services.polyline import encode_polyline
+from app.schemas.pathfinding import OptimizedDeliveryLeg
 
 logger = get_logger("navigation")
 
@@ -489,15 +490,34 @@ async def maybe_reorder_stops_on_off_route(
     package_ids = [leg["package_id"] for leg in remaining_legs]
     recipient_names = [leg["recipient_name"] for leg in remaining_legs]
     
-    # 7. Use cached road distance function for ordering (no fresh traffic)
-    from app.api.v1.endpoints.pathfinding import _ordering_road_distance
-    
+    # 7. Cached road distance for ordering; degrade gracefully ke haversine
+    #    bila engine routing tidak tersedia (mis. osmium/PBF belum terpasang)
+    #    agar reorder TIDAK gagal total di production maupun environment test.
+    from app.services.pathfinding.core_a_star import haversine_distance as _hav
+
+    try:
+        from app.api.v1.endpoints.pathfinding import (
+            _ordering_road_distance,
+        )
+        _HAS_ORDERING = True
+    except Exception as _imp_exc:  # pragma: no cover - env tanpa deps routing
+        logger.warning(
+            "[NAV] road ordering tak tersedia (%s); fallback haversine.",
+            _imp_exc)
+        _HAS_ORDERING = False
+
     mode = session.mode
     last_mile = session.last_mile
-    
+
     async def road_cost_fn(o, d):
-        return await _ordering_road_distance(
-            app, redis, mode, last_mile, o[0], o[1], d[0], d[1])
+        if _HAS_ORDERING:
+            try:
+                return await _ordering_road_distance(
+                    app, redis, mode, last_mile, o[0], o[1], d[0], d[1])
+            except Exception as exc:
+                logger.debug(
+                    "[NAV] road cost gagal (%s); fallback haversine.", exc)
+        return _hav(o, d)
     
     # 8. Run hybrid optimizer with current position as start
     from app.services.pathfinding.delivery_optimizer import optimize_stop_order_hybrid
@@ -563,6 +583,15 @@ async def maybe_reorder_stops_on_off_route(
     
     # Calculate distance savings percentage
     saving_pct = ((old_total_dist - new_total_dist) / old_total_dist * 100) if old_total_dist > 0 else 0.0
+
+    # Savings gate: HANYA berlaku di mode normal. Di test mode, reorder harus
+    # selalu lanjut ke pemilihan nearest-stop (direktif: klik manapun di peta
+    # langsung mengubah urutan — tanpa terhalang threshold buatan).
+    if not test_mode and saving_pct < min_saving_pct:
+        logger.info(
+            "[NAV] Re-order rejected: saving %.1f%% < %.1f%% threshold",
+            saving_pct, min_saving_pct)
+        return False
     
     # 12. Determine re-order type: standard (remaining only) vs major (switch active stop)
     # Calculate distance to current active stop
@@ -771,9 +800,25 @@ async def maybe_reorder_stops_on_off_route(
             else:
                 reorder_reason = "off_route_closer_to_next_stop" + ("_test" if test_mode else "")
             
-            # Build legs with full geometries for frontend rendering
+            # Build legs with full geometries AND real distance/duration values.
+            # Snapshot legs (driver:nav:{kurir_id}) store {index, package_id,
+            # recipient_name, encoded, dest, eta_s} — so distance_km must be
+            # derived from the decoded geometry and duration_mins from eta_s.
+            # Hardcoding zeros here makes mobile/UI show "0 mnt" after reorder.
+            from app.services.polyline import decode_polyline
+
+            def _leg_metrics(coords):
+                """Jarak (km) + estimasi durasi (menit) dari decoded coords."""
+                dist_m = sum(
+                    haversine_distance(coords[i], coords[i + 1])
+                    for i in range(len(coords) - 1))
+                speed_kmh = _env_float("MODE_AVG_SPEED_KMH",
+                                       _env_float("DEFAULT_SPEED_KMH", 40.0))
+                dur_min = (dist_m / (speed_kmh / 3.6) / 60.0) if speed_kmh > 0 else 0.0
+                return round(dist_m / 1000.0, 2), round(dur_min, 1)
+
             legs_with_geometry = []
-            
+
             # Build all legs in new order with geometries
             all_legs_in_order = []
             if active_stop_switched:
@@ -790,30 +835,45 @@ async def maybe_reorder_stops_on_off_route(
                     all_legs_in_order = [current_active_leg] + remaining_legs
                 else:
                     all_legs_in_order = remaining_legs
-            
-            # Build legs with geometries
-            # Active leg (index 0): from current position to first stop
+
+            # Active leg (index 0): polyline aktif (session.coords) SELALU
+            # disertakan — baik major switch (rute baru ke stop terdekat)
+            # maupun standard reorder (rute berjalan ke stop aktif) — agar
+            # klien/mobile menerima geometri lengkap sisa perjalanan.
             if all_legs_in_order:
-                first_leg = all_legs_in_order[0]
-                first_leg_coords = session.coords if active_stop_switched else (session.coords if session.coords else [])
-                if first_leg_coords and len(first_leg_coords) >= 2:
+                first_leg_coords = session.coords if session.coords else []
+                if len(first_leg_coords) >= 2:
+                    dist_km, dur_min = _leg_metrics(first_leg_coords)
                     legs_with_geometry.append({
                         "leg_index": 0,
                         "geometry": encode_polyline(first_leg_coords, 5),
-                        "distance_km": round(sum(haversine_distance(first_leg_coords[i], first_leg_coords[i+1]) for i in range(len(first_leg_coords)-1)) / 1000.0, 2),
-                        "duration_mins": 0,  # Will be calculated if needed
+                        "distance_km": dist_km,
+                        "duration_mins": dur_min,
+                        "estimated_time_seconds": round(dur_min * 60.0, 1),
                     })
-            
-            # Remaining legs (index 1 onwards)
+
+            # Remaining legs (index 1 onwards) — metrics dari snapshot:
+            #   distance_km <- decode("encoded") + haversine sum
+            #   duration_mins / estimated_time_seconds <- snapshot "eta_s"
             for idx, leg in enumerate(all_legs_in_order[1:], start=1):
-                # We need to get the geometry for this leg from the stored route
-                # For now, we'll use the encoded polyline from the leg if available
                 leg_geometry = leg.get("geometry") or leg.get("encoded") or ""
+                try:
+                    leg_coords = decode_polyline(leg_geometry, 5) if leg_geometry else []
+                except Exception:
+                    leg_coords = []
+                eta_s = float(leg.get("eta_s") or 0.0)
+                if len(leg_coords) >= 2:
+                    dist_km, dur_from_dist = _leg_metrics(leg_coords)
+                else:
+                    dist_km, dur_from_dist = 0.0, 0.0
+                # Durasi: prioritaskan eta_s hasil routing engine; fallback estimasi.
+                dur_min = round(eta_s / 60.0, 1) if eta_s > 0 else dur_from_dist
                 legs_with_geometry.append({
                     "leg_index": idx,
                     "geometry": leg_geometry,
-                    "distance_km": leg.get("distance_km", 0),
-                    "duration_mins": leg.get("duration_mins", 0),
+                    "distance_km": dist_km,
+                    "duration_mins": dur_min,
+                    "estimated_time_seconds": round(dur_min * 60.0, 1),
                 })
             
             if active_stop_switched:
