@@ -292,7 +292,8 @@ def _ground_search_once(client, model: str, prompt: str) -> str:
         tools=[types.Tool(google_search=types.GoogleSearch())],
         temperature=0.2,
     )
-    resp = client.models.generate_content(model, prompt, config=config)
+    contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
+    resp = client.models.generate_content(model=model, contents=contents, config=config)
     parts = resp.candidates[0].content.parts if resp.candidates else []
     return "".join(p.text for p in parts if p.text)
 
@@ -362,7 +363,10 @@ async def ingest_road_news(redis=None, city: str | None = None) -> int:
                         logger.warning(
                             "[RAG] Grounding (backup) gagal: %s", exc2)
                 else:
-                    logger.warning("[RAG] Grounding gagal: %s", exc)
+                    if ai_agent._is_rate_limit(exc):
+                        logger.error("[RAG] Kedua key habis (429 RESOURCE_EXHAUSTED). Fallback ke cache/empty.")
+                    else:
+                        logger.warning("[RAG] Grounding gagal: %s", exc)
         items = _parse_news_items(text) if text else []
         vectors = None
         if not items:

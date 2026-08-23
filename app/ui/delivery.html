@@ -49,8 +49,12 @@
     <section>
       <h2>1. Titik Awal (Hub / Posisi Kurir)</h2>
       <div class="mode-row">
-        <label><input type="radio" name="mode" value="hub" checked><span>Klik = Hub</span></label>
-        <label><input type="radio" name="mode" value="deviate"><span>Klik = Deviasi Kurir</span></label>
+        <label><input type="radio" name="mode" value="hub" checked id="inp-mode-hub"><span>Klik = Hub</span></label>
+        <label><input type="radio" name="mode" value="deviate" id="inp-mode-deviate"><span>Klik = Deviasi Kurir</span></label>
+        <label><input type="radio" name="mode" value="reroute_test" disabled id="inp-mode-reroute_test"><span>Klik = Test Off-Route Auto-Reroute</span></label>
+      </div>
+      <div class="coords" id="reroute-test-status" style="display:none; color:#b3372f; margin-top:6px;">
+        Mode Test: Klik peta untuk memindahkan kurir. Off-route > 50m akan memicu auto-reroute + re-order.
       </div>
       <div class="row"><span>Hub origin</span><b id="txt-hub">-</b></div>
       <div class="row"><span>Posisi kurir saat ini</span><b id="txt-pos">-</b></div>
