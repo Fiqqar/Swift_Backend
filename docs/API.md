@@ -312,7 +312,7 @@ Segmen jalan yang terkena penalti (untuk overlay di map).
         "resi": "PKT000001",
         "paket": { "id": 1, "nama": "Paket A", "alamat": "Jl. ...", "jenis_pengiriman": "reguler" },
         "status": "assigned",
-        "cod": { "status": "pending", "amount": 150000, "collected_at": null, "remitted_at": null },
+        "cod": { "status": "pending", "is_cod": true, "amount": 150000, "collected_at": null, "remitted_at": null },
         "billing": { "ongkir": 15000.0, "status": "unpaid", "paid_at": null },
         "picked_up_at": null,
         "delivered_at": null
@@ -321,6 +321,8 @@ Segmen jalan yang terkena penalti (untuk overlay di map).
   }
 }
 ```
+
+> **Untuk Flutter (simple):** pakai `cod.is_cod` (`true` = COD, `false` = bukan COD). Gak perlu cek `status`. Contoh Dart: `if (shipment['cod']['is_cod']) showBadge('COD')`. Field `status` tetap ada untuk finance (`pending`/`collected`/`remitted`/`not_applicable`).
 
 **Error**: `404` kurir/paket/hub tidak ditemukan, `409` kurir punya batch aktif
 atau paket sudah punya shipment aktif.
@@ -405,7 +407,7 @@ Query params (opsional): `status`, `batch_id`, `kurir_id`.
       "resi": "PKT000001",
       "paket": { "id": 1, "nama": "Paket A", "alamat": "Jl. ...", "jenis_pengiriman": "reguler" },
       "status": "assigned",
-      "cod": { "status": "pending", "amount": 150000, "collected_at": null, "remitted_at": null },
+      "cod": { "status": "pending", "is_cod": true, "amount": 150000, "collected_at": null, "remitted_at": null },
       "billing": { "ongkir": 15000.0, "status": "unpaid", "paid_at": null },
       "picked_up_at": null,
       "delivered_at": null,
@@ -415,6 +417,8 @@ Query params (opsional): `status`, `batch_id`, `kurir_id`.
   ]
 }
 ```
+
+> **Flutter:** `is_cod == true` berarti COD, `false` berarti bukan COD. Contoh non-COD: `"cod": { "status": "not_applicable", "is_cod": false, "amount": null }`.
 
 ---
 
@@ -463,11 +467,13 @@ Tandai COD sudah di-setor (remitted). Hanya valid kalau COD `collected`.
 {
   "success": true,
   "message": "COD ditandai remitted",
-  "data": { "shipment_id": 10, "cod": { "status": "remitted", "amount": 150000, "collected_at": "2026-08-14T...", "remitted_at": "2026-08-14T..." } }
+  "data": { "shipment_id": 10, "cod": { "status": "remitted", "is_cod": true, "amount": 150000, "collected_at": "2026-08-14T...", "remitted_at": "2026-08-14T..." } }
 }
 ```
 
 **Error**: `409` COD belum `collected`.
+
+> **Catatan COD buat Flutter:** `cod.status` punya 4 nilai (`pending`/`collected`/`remitted`/`not_applicable`), tapi Flutter cukup pakai `cod.is_cod` boolean. `is_cod` = `true` jika COD, `false` jika `not_applicable`.
 
 ---
 
