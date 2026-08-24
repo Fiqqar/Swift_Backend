@@ -91,6 +91,7 @@ class RouteResponse(BaseModel):
         description="ID snapshot rute aktif (untuk real-time navigation). "
                     "Ada bila live navigation / dynamic rerouting aktif.")
     steps: list[RouteStep] = Field(default=[], description="Turn-by-turn navigasi langkah demi langkah.")
+    legs: list["OptimizedDeliveryLeg"] = Field(default=[], description="Detail setiap leg dalam rute multi-stop.")
 
 class RouteIncident(BaseModel):
     type: Literal["road_closure", "congestion"]

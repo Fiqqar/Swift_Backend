@@ -316,22 +316,23 @@ async def _handle_report(report, app, redis=None, registry=None) -> dict:
         if pos.get("lat") is None or pos.get("lon") is None:
             continue
         try:
-            response = await compute_reroute(
-                app, redis, session,
-                float(pos["lat"]), float(pos["lon"]),
-                traffic=True, extra_penalties=penalties)
+            async with session.lock:
+                response = await compute_reroute(
+                    app, redis, session,
+                    float(pos["lat"]), float(pos["lon"]),
+                    traffic=True, extra_penalties=penalties)
+                if response is not None:
+                    session.cooldown_until = time.time() + REROUTE_COOLDOWN_SECONDS
+                    session.coords = list(response.route_coordinates)
+                    session._last_nearest_idx = 0
+                    reason = "Laporan kurir #%s: %s" % (
+                        report.id, (report.text or "")[:_MAX_REASON_LEN])
+                    await _push_reroute_event(session, response, report, reason)
+                    matched += 1
         except Exception as exc:
             logger.warning("[REPORT] Reroute kurir %s gagal: %s",
                            session.kurir_id, exc)
             continue
-        if response is None:
-            continue
-        reason = "Laporan kurir #%s: %s" % (
-            report.id, (report.text or "")[:_MAX_REASON_LEN])
-        session.cooldown_until = time.time() + REROUTE_COOLDOWN_SECONDS
-        session.coords = list(response.route_coordinates)
-        await _push_reroute_event(session, response, report, reason)
-        matched += 1
 
     report.status = "processed"
     return {"id": report.id, "status": "processed",

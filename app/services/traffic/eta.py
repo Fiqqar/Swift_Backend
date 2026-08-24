@@ -23,10 +23,20 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def eta_config() -> dict:
-    default_speed = _env_float("DEFAULT_SPEED_KMH", 40.0)
+    # Hardening: env 0/negatif TIDAK BOLEH menimpa default — speed 0 membuat
+    # compute_eta selalu None (ETA null + duration 0 di seluruh API/WS).
+    _BUILTIN_SPEED = 40.0
+    default_speed = _env_float("DEFAULT_SPEED_KMH", _BUILTIN_SPEED)
+    if default_speed <= 0:
+        logger.warning(
+            "DEFAULT_SPEED_KMH=%s tidak valid; pakai %.0f.",
+            os.environ.get("DEFAULT_SPEED_KMH", ""), _BUILTIN_SPEED)
+        default_speed = _BUILTIN_SPEED
     mode_speed = _env_float("MODE_AVG_SPEED_KMH", default_speed)
     if mode_speed <= 0:
         mode_speed = default_speed
+        if mode_speed <= 0:
+            mode_speed = _BUILTIN_SPEED
     return {
         "custom": _env_bool("ENABLE_CUSTOM_ETA", False),
         "service_minutes": max(0.0, _env_float("SERVICE_TIME_MINUTES", 3.0)),

@@ -473,10 +473,13 @@ async def _ensure_city_news(redis, city: str) -> bool:
     if not city:
         return False
     interval = max(60.0, RAG_NEWS_INGEST_INTERVAL_S)
-    if _store.has_city(city):
-        last = _last_ingest_by_city.get(city, 0.0)
-        if time.monotonic() - last < interval:
-            return True
+
+    # Throttle check berlaku untuk SEMUA kota — bukan hanya yang punya berita.
+    # Sebelumnya, kota tanpa berita tidak pernah masuk cooldown → spam Gemini.
+    last = _last_ingest_by_city.get(city, 0.0)
+    if time.monotonic() - last < interval:
+        return _store.has_city(city)
+
     existing = _ingest_tasks.get(city)
     if existing is not None and not existing.done():
         return False
