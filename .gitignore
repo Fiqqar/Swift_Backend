@@ -10,6 +10,7 @@ wheels/
 .venv
 .env
 .env.production
+.env.host
 
 cache
 
