@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, Request
 
@@ -33,24 +34,38 @@ def _token_kurir_id(request: Request) -> int | None:
         return None
 
 
-async def _rate_limited(redis, kurir_id: int) -> bool:
-    """True bila kurir melebihi batas laporan per jendela waktu (fail-open).
+# In-memory fallback counter (aktif HANYA saat Redis None).
+# Tidak akurat lintas-instance, tapi jauh lebih baik daripada tanpa batas.
+_memory_rl: dict[int, list[float]] = {}
 
-    Pakai Redis `INCR` + `EXPIRE` pada key `rl:driver-report:{kurir_id}`.
-    Bila Redis tidak tersedia / gagal, kembalikan False (tidak dibatasi) agar
-    fitur tetap berjalan — filosofi non-fatal yang sama seperti modul lain.
+
+async def _rate_limited(redis, kurir_id: int) -> bool:
+    """True bila kurir melebihi batas laporan per jendela waktu.
+
+    Prioritas: Redis INCR+EXPIRE. Bila Redis tidak tersedia, gunakan
+    counter in-memory sebagai pengaman kasar (fail-open + safety net).
     """
-    if redis is None:
-        return False
-    key = "rl:driver-report:%s" % kurir_id
-    try:
-        count = await redis.incr(key)
-        if count == 1:
-            await redis.expire(key, REPORT_RATE_LIMIT_WINDOW_S)
-        return count > REPORT_RATE_LIMIT_MAX
-    except Exception as exc:
-        logger.warning("[REPORT] Rate limit Redis gagal; skip: %s", exc)
-        return False
+    if redis is not None:
+        key = "rl:driver-report:%s" % kurir_id
+        try:
+            count = await redis.incr(key)
+            if count == 1:
+                await redis.expire(key, REPORT_RATE_LIMIT_WINDOW_S)
+            return count > REPORT_RATE_LIMIT_MAX
+        except Exception as exc:
+            logger.warning("[REPORT] Rate limit Redis gagal; fallback memori: %s", exc)
+
+    # In-memory fallback (single-process only, bukan pengganti Redis).
+    now = time.monotonic()
+    window_start = now - REPORT_RATE_LIMIT_WINDOW_S
+    timestamps = _memory_rl.setdefault(kurir_id, [])
+    # Bersihkan timestamp yang sudah keluar window
+    _memory_rl[kurir_id] = [ts for ts in timestamps if ts > window_start]
+    timestamps = _memory_rl[kurir_id]
+    if len(timestamps) >= REPORT_RATE_LIMIT_MAX:
+        return True
+    timestamps.append(now)
+    return False
 
 
 @router.post("/driver-reports")

@@ -350,6 +350,8 @@ Fitur ini hanya aktif untuk rute `kind: "multi"` dengan ≥ 2 stop tersisa. Keti
 
 **Prioritas paket**: EXPRESS selalu diutamakan — pencarian nearest-first hanya dilakukan di antara paket EXPRESS yang tersisa; REGULAR nearest-only bila EXPRESS sudah habis.
 
+**Sumber kecepatan estimasi durasi**: GPS realtime kurir (`last_position.speed`, bila > 0) → default per-mode env `SPEED_KMH_MOTORCYCLE` (35) / `SPEED_KMH_CAR` (40) / `SPEED_KMH_TRUCK` (30) → `DEFAULT_SPEED_KMH` (40). `duration_mins`/`estimated_time_seconds` pada `legs[0]` (estimasi posisi→stop baru) memakai nilai ini; `legs[i>0]` memprioritaskan `eta_s` hasil routing engine dari snapshot.
+
 ### 5.2 Mode Normal vs Test Mode
 
 Flag `"test_mode": true` pada `location_update` menurunkan ambang untuk memudahkan pengujian UI demo (klik sembarang di peta langsung memicu reorder):

@@ -99,6 +99,15 @@ class NavSession:
         self._reorder_candidate: list[int] | None = None
         self._reorder_candidate_count: int = 0
 
+        # Forward-only nearest-point tracking (anti-fluktuasi ETA)
+        self._last_nearest_idx: int = 0
+
+        # EWMA speed smoothing (anti-fluktuasi ETA — #28-P1)
+        self.smoothed_speed_kmh: float | None = None
+
+        # Dead-band push (anti-spam route_progress — #28-P3)
+        self._last_pushed_remaining_m: float = -1.0
+
 
 class NavRegistry:
     """Registry sesi navigation per kurir (1 koneksi/kurir)."""
@@ -158,6 +167,49 @@ def _haversine(a, b) -> float:
     return haversine_distance(a, b)
 
 
+def _resolve_speed_kmh(session: "NavSession") -> float:
+    """Sumber kecepatan terpusat utk estimasi durasi navigasi.
+
+    Prioritas:
+      1. GPS realtime kurir (`session.last_position["speed"]`, > 0)
+         → di-smooth via EWMA (alpha=0.3) utk mengurangi fluktuasi
+      2. Smoothed speed terakhir (jika GPS drop sesaat)
+      3. Default per-mode (env `SPEED_KMH_MOTORCYCLE|CAR|TRUCK`)
+      4. Global (env `DEFAULT_SPEED_KMH`) -> konstanta 40.0
+
+    Catatan: `MODE_AVG_SPEED_KMH` tidak lagi dipakai modul ini — env itu
+    hanya masih relevan untuk jalur HTTP ETA di `traffic/eta.py`.
+    """
+    if session.last_position and session.last_position.get("speed"):
+        try:
+            v = float(session.last_position["speed"])
+            if v > 0:
+                # EWMA smoothing (alpha=0.3): nilai baru 30%, histori 70%.
+                # Mencegah ETA naik-turun liar akibat GPS noise.
+                ema = session.smoothed_speed_kmh
+                session.smoothed_speed_kmh = (
+                    0.3 * v + 0.7 * ema if ema is not None else v)
+                return session.smoothed_speed_kmh
+        except (TypeError, ValueError):
+            pass
+
+    # GPS tidak tersedia — gunakan smoothed speed terakhir sebelum jatuh
+    # ke default per-mode, agar transisi sumber tidak melompat tajam.
+    if session.smoothed_speed_kmh is not None and session.smoothed_speed_kmh > 0:
+        return session.smoothed_speed_kmh
+
+    mode_defaults = {
+        "motorcycle": _env_float("SPEED_KMH_MOTORCYCLE", 35.0),
+        "car": _env_float("SPEED_KMH_CAR", 40.0),
+        "truck": _env_float("SPEED_KMH_TRUCK", 30.0),
+    }
+    fallback = _env_float("DEFAULT_SPEED_KMH", 40.0)
+    if fallback <= 0:
+        fallback = 40.0
+    return mode_defaults.get(
+        getattr(session, "mode", None) or "", fallback)
+
+
 def remaining_progress(session: NavSession, lat: float,
                        lon: float) -> dict | None:
     """Sisa jarak/waktu + persen progres dari posisi ke ujung polyline aktif."""
@@ -170,26 +222,25 @@ def remaining_progress(session: NavSession, lat: float,
     if total <= 0:
         return None
 
-    nearest = 0
+    # Forward-only nearest-point search: mulai dari index terakhir yang
+    # diketahui (dengan toleransi mundur 2 indeks untuk noise GPS), bukan
+    # scan ulang seluruh polyline. Mencegah remaining_distance melompat
+    # mundur pada rute berkelok/jalan sejajar.
+    start_idx = max(0, session._last_nearest_idx - 2)
+    nearest = start_idx
     nearest_d = float("inf")
-    for i, c in enumerate(coords):
-        d = _haversine((lat, lon), c)
+    for i in range(start_idx, len(coords)):
+        d = _haversine((lat, lon), coords[i])
         if d < nearest_d:
             nearest_d = d
             nearest = i
+    session._last_nearest_idx = nearest
     remaining = nearest_d
     for i in range(nearest, len(coords) - 1):
         remaining += _haversine(coords[i], coords[i + 1])
 
     progress_pct = max(0.0, min(100.0, (1.0 - remaining / total) * 100.0))
-    speed_kmh = 40.0
-    if session.last_position and session.last_position.get("speed"):
-        try:
-            speed_kmh = float(session.last_position["speed"])
-        except (TypeError, ValueError):
-            speed_kmh = 40.0
-    if speed_kmh <= 0:
-        speed_kmh = 40.0
+    speed_kmh = _resolve_speed_kmh(session)
     remaining_time_s = remaining / (speed_kmh / 3.6)
 
     # NEW: Calculate traveled distance and average speed
@@ -326,7 +377,7 @@ async def compute_reroute(app, redis, session: NavSession,
                 traffic_penalties[eid] = max(
                     traffic_penalties.get(eid, 1.0), mult)
     try:
-        response, node_sequence, final_penalties, _m = await _best_route(
+        response, node_sequence, final_penalties, actual_mode = await _best_route(
             app, plan, redis, traffic_penalties, leg_payload, mode,
             lat, lon, dest[0], dest[1],
             need_nodes=True, skip_traffic=not traffic)
@@ -335,6 +386,15 @@ async def compute_reroute(app, redis, session: NavSession,
         return None
     if response is None:
         return None
+
+    # #17: Sync session.mode dengan mode aktual yang dipakai routing engine.
+    # _best_route bisa fallback motorcycle/truck -> car bila mode asli gagal.
+    # Tanpa update ini, resolusi speed dan info mode ke client jadi salah.
+    if actual_mode != mode:
+        logger.info(
+            "[NAV] Mode fallback %s -> %s (routing engine).",
+            mode, actual_mode)
+        session.mode = actual_mode
 
     # NEW: Populate session with navigation data for turn-by-turn
     if node_sequence:
@@ -346,14 +406,7 @@ async def compute_reroute(app, redis, session: NavSession,
         if hasattr(pg, 'edge_names'):
             session.edge_names = pg.edge_names or {}
         # Extract turn-by-turn steps
-        speed_kmh = 40.0
-        if session.last_position and session.last_position.get("speed"):
-            try:
-                speed_kmh = float(session.last_position["speed"])
-            except (TypeError, ValueError):
-                speed_kmh = 40.0
-        if speed_kmh <= 0:
-            speed_kmh = 40.0
+        speed_kmh = _resolve_speed_kmh(session)
         session.steps = extract_steps(
             node_sequence,
             response.route_coordinates,
@@ -404,6 +457,7 @@ def advance_leg(session: NavSession, nav: dict) -> dict | None:
     session.leg_index = next_index
     session.coords = coords
     session.dest = (float(dest[0]), float(dest[1]))
+    session._last_nearest_idx = 0
     session.off_route_active = False
     session.cooldown_until = 0.0
     session.last_progress_push = 0.0
@@ -451,10 +505,6 @@ async def maybe_reorder_stops_on_off_route(
     active_switch_pct = 20.0 if test_mode else REORDER_ACTIVE_SWITCH_DISTANCE_PCT
     min_saving_pct = 20.0 if test_mode else REORDER_MIN_DISTANCE_SAVING_PCT
     
-    # 1. Only for multi-leg routes with remaining stops
-    if session.kind != "multi" or session.leg_index >= session.total_legs - 1:
-        return False
-    
     # 2. Check off-route threshold for re-ordering (higher than warning threshold)
     if off_route_distance_m <= reorder_threshold:
         return False
@@ -493,7 +543,7 @@ async def maybe_reorder_stops_on_off_route(
     # 7. Cached road distance for ordering; degrade gracefully ke haversine
     #    bila engine routing tidak tersedia (mis. osmium/PBF belum terpasang)
     #    agar reorder TIDAK gagal total di production maupun environment test.
-    from app.services.pathfinding.core_a_star import haversine_distance as _hav
+    from app.services.pathfinding.core_a_star import haversine_distance
 
     try:
         from app.api.v1.endpoints.pathfinding import (
@@ -517,7 +567,7 @@ async def maybe_reorder_stops_on_off_route(
             except Exception as exc:
                 logger.debug(
                     "[NAV] road cost gagal (%s); fallback haversine.", exc)
-        return _hav(o, d)
+        return haversine_distance(o, d)
     
     # 8. Run hybrid optimizer with current position as start
     from app.services.pathfinding.delivery_optimizer import optimize_stop_order_hybrid
@@ -594,11 +644,9 @@ async def maybe_reorder_stops_on_off_route(
         return False
     
     # 12. Determine re-order type: standard (remaining only) vs major (switch active stop)
-    # Calculate distance to current active stop
     current_active_dest = session.dest
     dist_to_current_active = float('inf')
     if current_active_dest:
-        from app.services.pathfinding.core_a_star import haversine_distance
         dist_to_current_active = haversine_distance(
             (current_lat, current_lon), current_active_dest)
     
@@ -606,15 +654,6 @@ async def maybe_reorder_stops_on_off_route(
     new_first_stop_coord = stops_coords[new_order[0]]
     dist_to_new_first = haversine_distance(
         (current_lat, current_lon), new_first_stop_coord)
-    
-    # 12. Determine re-order type: standard (remaining only) vs major (switch active stop)
-    # Calculate distance to current active stop
-    current_active_dest = session.dest
-    dist_to_current_active = float('inf')
-    if current_active_dest:
-        from app.services.pathfinding.core_a_star import haversine_distance
-        dist_to_current_active = haversine_distance(
-            (current_lat, current_lon), current_active_dest)
     
     # In test_mode: prioritize EXPRESS packages, then REGULAR
     if test_mode:
@@ -755,6 +794,7 @@ async def maybe_reorder_stops_on_off_route(
                 session.coords = new_coords
                 session.dest = (float(new_dest[0]), float(new_dest[1]))
                 session.leg_index = session.leg_index + 1  # Move to new first leg
+                session._last_nearest_idx = 0
                 session.current_package_id = new_first_leg.get("package_id")
                 session.current_recipient = new_first_leg.get("recipient_name")
                 session.off_route_active = False
@@ -807,13 +847,15 @@ async def maybe_reorder_stops_on_off_route(
             # Hardcoding zeros here makes mobile/UI show "0 mnt" after reorder.
             from app.services.polyline import decode_polyline
 
-            def _leg_metrics(coords):
+            # Kecepatan di-resolve SEKALI dari state kurir (GPS realtime ->
+            # default per-mode) dan dipakai untuk semua estimasi leg.
+            reorder_speed_kmh = _resolve_speed_kmh(session)
+
+            def _leg_metrics(coords, speed_kmh):
                 """Jarak (km) + estimasi durasi (menit) dari decoded coords."""
                 dist_m = sum(
                     haversine_distance(coords[i], coords[i + 1])
                     for i in range(len(coords) - 1))
-                speed_kmh = _env_float("MODE_AVG_SPEED_KMH",
-                                       _env_float("DEFAULT_SPEED_KMH", 40.0))
                 dur_min = (dist_m / (speed_kmh / 3.6) / 60.0) if speed_kmh > 0 else 0.0
                 return round(dist_m / 1000.0, 2), round(dur_min, 1)
 
@@ -843,7 +885,7 @@ async def maybe_reorder_stops_on_off_route(
             if all_legs_in_order:
                 first_leg_coords = session.coords if session.coords else []
                 if len(first_leg_coords) >= 2:
-                    dist_km, dur_min = _leg_metrics(first_leg_coords)
+                    dist_km, dur_min = _leg_metrics(first_leg_coords, reorder_speed_kmh)
                     legs_with_geometry.append({
                         "leg_index": 0,
                         "geometry": encode_polyline(first_leg_coords, 5),
@@ -863,7 +905,7 @@ async def maybe_reorder_stops_on_off_route(
                     leg_coords = []
                 eta_s = float(leg.get("eta_s") or 0.0)
                 if len(leg_coords) >= 2:
-                    dist_km, dur_from_dist = _leg_metrics(leg_coords)
+                    dist_km, dur_from_dist = _leg_metrics(leg_coords, reorder_speed_kmh)
                 else:
                     dist_km, dur_from_dist = 0.0, 0.0
                 # Durasi: prioritaskan eta_s hasil routing engine; fallback estimasi.
@@ -961,84 +1003,85 @@ async def navigation_worker(app) -> None:
 
 
 async def _evaluate_session(app, session: NavSession) -> None:
+    async with session.lock:
+        now = time.time()
+        if session.route_id is None or session.dest is None:
+            return
+        if now < session.cooldown_until:
+            return
+        if now - session.last_traffic_eval < TRAFFIC_REROUTE_INTERVAL_SECONDS:
+            return
+        session.last_traffic_eval = now
+        if not session.last_position:
+            return
+        pos = session.last_position
+        response = await compute_reroute(
+            app, getattr(app.state, "redis", None), session,
+            float(pos["lat"]), float(pos["lon"]), traffic=True)
+        if response is None:
+            return
+        new_eta_s = response.estimated_time_seconds or 0.0
+        old_prog = remaining_progress(
+            session, float(pos["lat"]), float(pos["lon"]))
 
-    now = time.time()
-    if session.route_id is None or session.dest is None:
-        return
-    if now < session.cooldown_until:
-        return
-    if now - session.last_traffic_eval < TRAFFIC_REROUTE_INTERVAL_SECONDS:
-        return
-    session.last_traffic_eval = now
-    if not session.last_position:
-        return
-    pos = session.last_position
-    response = await compute_reroute(
-        app, getattr(app.state, "redis", None), session,
-        float(pos["lat"]), float(pos["lon"]), traffic=True)
-    if response is None:
-        return
-    new_eta_s = response.estimated_time_seconds or 0.0
-    old_prog = remaining_progress(
-        session, float(pos["lat"]), float(pos["lon"]))
-
-    reason = None
-    if AI_REROUTE_ENABLED:
-        from app.services.ai_agent import (
-            build_reroute_context,
-            decide_reroute,
-        )
-        decision = await decide_reroute(
-            build_reroute_context(
-                session, float(pos["lat"]), float(pos["lon"]),
-                hint="traffic",
-                extra={
-                    "candidate": {
-                        "eta_s": new_eta_s,
-                        "saving_s": round(
-                            (old_prog["remaining_time_s"] - new_eta_s)
-                            if old_prog else 0.0, 1),
-                    },
-                }),
-            "traffic",
-            app=app,
-            redis=getattr(app.state, "redis", None),
-            session=session,
-        )
-        if decision is not None:
-            if decision.get("action") != "apply":
-                logger.info(
-                    "[NAV] AI tolak reroute traffic kurir %s (%s).",
-                    session.kurir_id, decision.get("reason"))
+        reason = None
+        if AI_REROUTE_ENABLED:
+            from app.services.ai_agent import (
+                build_reroute_context,
+                decide_reroute,
+            )
+            decision = await decide_reroute(
+                build_reroute_context(
+                    session, float(pos["lat"]), float(pos["lon"]),
+                    hint="traffic",
+                    extra={
+                        "candidate": {
+                            "eta_s": new_eta_s,
+                            "saving_s": round(
+                                (old_prog["remaining_time_s"] - new_eta_s)
+                                if old_prog else 0.0, 1),
+                        },
+                    }),
+                "traffic",
+                app=app,
+                redis=getattr(app.state, "redis", None),
+                session=session,
+            )
+            if decision is not None:
+                if decision.get("action") != "apply":
+                    logger.info(
+                        "[NAV] AI tolak reroute traffic kurir %s (%s).",
+                        session.kurir_id, decision.get("reason"))
+                    return
+                reason = decision.get("reason") or "ai_decision"
+            elif not _should_traffic_reroute(session, new_eta_s):
                 return
-            reason = decision.get("reason") or "ai_decision"
         elif not _should_traffic_reroute(session, new_eta_s):
             return
-    elif not _should_traffic_reroute(session, new_eta_s):
-        return
 
-    session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
-    session.coords = list(response.route_coordinates)
-    session.dest = (session.dest[0], session.dest[1])
-    event = {
-        "type": "auto_rerouted" if AUTO_REROUTE else "reroute_available",
-        "route_id": session.route_id,
-        "polyline": encode_polyline(response.route_coordinates, 5),
-        "saving_s": round(
-            (old_prog["remaining_time_s"] - new_eta_s)
-            if old_prog else 0.0, 1),
-        "eta_s": round(new_eta_s, 1),
-        "applied": AUTO_REROUTE,
-    }
-    if reason:
-        event["reason"] = reason
-    if session.ws is not None:
-        try:
-            await session.ws.send_json(event)
-            logger.info(
-                "[NAV] Kurir %s %s (hemat %.0fs, cooldown %.0fs).",
-                session.kurir_id, event["type"], event["saving_s"],
-                REROUTE_COOLDOWN_SECONDS)
-        except Exception as exc:
-            logger.warning("[NAV] Kirim event kurir %s gagal: %s",
-                           session.kurir_id, exc)
+        session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
+        session.coords = list(response.route_coordinates)
+        session.dest = (session.dest[0], session.dest[1])
+        session._last_nearest_idx = 0
+        event = {
+            "type": "auto_rerouted" if AUTO_REROUTE else "reroute_available",
+            "route_id": session.route_id,
+            "polyline": encode_polyline(response.route_coordinates, 5),
+            "saving_s": round(
+                (old_prog["remaining_time_s"] - new_eta_s)
+                if old_prog else 0.0, 1),
+            "eta_s": round(new_eta_s, 1),
+            "applied": AUTO_REROUTE,
+        }
+        if reason:
+            event["reason"] = reason
+        if session.ws is not None:
+            try:
+                await session.ws.send_json(event)
+                logger.info(
+                    "[NAV] Kurir %s %s (hemat %.0fs, cooldown %.0fs).",
+                    session.kurir_id, event["type"], event["saving_s"],
+                    REROUTE_COOLDOWN_SECONDS)
+            except Exception as exc:
+                logger.warning("[NAV] Kirim event kurir %s gagal: %s",
+                               session.kurir_id, exc)

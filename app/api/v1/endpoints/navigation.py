@@ -120,6 +120,7 @@ async def _apply_route(session: NavSession, nav: dict, leg_index: int) -> bool:
     session.leg_index = leg_index
     session.coords = coords
     session.dest = (float(dest[0]), float(dest[1]))
+    session._last_nearest_idx = 0
     session.mode = nav.get("mode", "motorcycle")
     session.last_mile = bool(nav.get("last_mile", True))
     session.total_distance_m = float(nav.get("total_distance_m", 0.0) or 0.0)
@@ -235,22 +236,28 @@ async def _handle_location_update(websocket: WebSocket, app,
         session.last_progress_push = now
         prog = remaining_progress(session, lat, lon)
         if prog is not None:
-            await websocket.send_json({
-                "type": "route_progress", "ok": True,
-                "route_id": session.route_id,
-                "leg_index": session.leg_index,
-                **prog,
-            })
-
-            # NEW: Send turn_by_turn if approaching a maneuver
-            next_maneuver = prog.get("next_maneuver")
-            if next_maneuver and next_maneuver.get("distance_m", 0) <= _NAV_TURN_NOTIFY_DISTANCE_M:
+            # Dead-band: hanya push bila remaining_distance berubah >= 15m
+            # dari push terakhir. Mencegah spam route_progress dengan nilai
+            # yang praktis tidak berubah (mengurangi fluktuasi ETA di UI).
+            new_remaining = prog["remaining_distance_m"]
+            if abs(new_remaining - session._last_pushed_remaining_m) >= 15:
+                session._last_pushed_remaining_m = new_remaining
                 await websocket.send_json({
-                    "type": "turn_by_turn", "ok": True,
+                    "type": "route_progress", "ok": True,
                     "route_id": session.route_id,
                     "leg_index": session.leg_index,
-                    "maneuver": next_maneuver,
+                    **prog,
                 })
+
+                # NEW: Send turn_by_turn if approaching a maneuver
+                next_maneuver = prog.get("next_maneuver")
+                if next_maneuver and next_maneuver.get("distance_m", 0) <= _NAV_TURN_NOTIFY_DISTANCE_M:
+                    await websocket.send_json({
+                        "type": "turn_by_turn", "ok": True,
+                        "route_id": session.route_id,
+                        "leg_index": session.leg_index,
+                        "maneuver": next_maneuver,
+                    })
 
     if session.dest is None or len(session.coords) < 2:
         return
@@ -299,41 +306,42 @@ async def _handle_location_update(websocket: WebSocket, app,
                     session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
                     if not was_active:
                         await _send_off_route_warning()
-                    old_prog = remaining_progress(session, lat, lon)
-                    reroute_start = time.time()
-                    response = await compute_reroute(
-                        app, redis, session, lat, lon, traffic=True)
-                    if response is not None:
-                        session.coords = list(response.route_coordinates)
-                        new_eta_s = response.estimated_time_seconds or 0.0
-                        reroute_duration = time.time() - reroute_start
-                        nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
-                        nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
-                        await websocket.send_json({
-                            "type": "auto_rerouted" if AUTO_REROUTE
-                            else "reroute_available",
-                            "ok": True,
-                            "route_id": session.route_id,
-                            "leg_index": session.leg_index,
-                            "polyline": encode_polyline(
-                                response.route_coordinates, 5),
-                            "saving_s": round(
-                                (old_prog["remaining_time_s"] - new_eta_s)
-                                if old_prog else 0.0, 1),
-                            "eta_s": round(new_eta_s, 1),
-                            "applied": AUTO_REROUTE,
-                            "reason": "off_route",
-                            "steps": session.steps,
-                        })
-                        # Dynamic stop re-ordering on off-route
-                        from app.services.navigation import maybe_reorder_stops_on_off_route
-                        test_mode = msg.get("test_mode", False)
-                        reordered = await maybe_reorder_stops_on_off_route(
-                            app, redis, session, lat, lon, dist, test_mode)
-                        if reordered:
-                            logger.info(
-                                "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
-                                session.kurir_id)
+                    async with session.lock:
+                        old_prog = remaining_progress(session, lat, lon)
+                        reroute_start = time.time()
+                        response = await compute_reroute(
+                            app, redis, session, lat, lon, traffic=True)
+                        if response is not None:
+                            session.coords = list(response.route_coordinates)
+                            new_eta_s = response.estimated_time_seconds or 0.0
+                            reroute_duration = time.time() - reroute_start
+                            nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
+                            nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
+                            await websocket.send_json({
+                                "type": "auto_rerouted" if AUTO_REROUTE
+                                else "reroute_available",
+                                "ok": True,
+                                "route_id": session.route_id,
+                                "leg_index": session.leg_index,
+                                "polyline": encode_polyline(
+                                    response.route_coordinates, 5),
+                                "saving_s": round(
+                                    (old_prog["remaining_time_s"] - new_eta_s)
+                                    if old_prog else 0.0, 1),
+                                "eta_s": round(new_eta_s, 1),
+                                "applied": AUTO_REROUTE,
+                                "reason": "off_route",
+                                "steps": session.steps,
+                            })
+                            # Dynamic stop re-ordering on off-route
+                            from app.services.navigation import maybe_reorder_stops_on_off_route
+                            test_mode = msg.get("test_mode", False)
+                            reordered = await maybe_reorder_stops_on_off_route(
+                                app, redis, session, lat, lon, dist, test_mode)
+                            if reordered:
+                                logger.info(
+                                    "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
+                                    session.kurir_id)
                     return
                 session.off_route_active = True
                 session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
@@ -346,41 +354,42 @@ async def _handle_location_update(websocket: WebSocket, app,
             await _send_off_route_warning()
         if now >= session.cooldown_until:
             session.cooldown_until = now + REROUTE_COOLDOWN_SECONDS
-            old_prog = remaining_progress(session, lat, lon)
-            reroute_start = time.time()
-            response = await compute_reroute(
-                app, redis, session, lat, lon, traffic=True)
-            if response is not None:
-                session.coords = list(response.route_coordinates)
-                new_eta_s = response.estimated_time_seconds or 0.0
-                reroute_duration = time.time() - reroute_start
-                nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
-                nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
-                await websocket.send_json({
-                    "type": "auto_rerouted" if AUTO_REROUTE
-                    else "reroute_available",
-                    "ok": True,
-                    "route_id": session.route_id,
-                    "leg_index": session.leg_index,
-                    "polyline": encode_polyline(
-                        response.route_coordinates, 5),
-                    "saving_s": round(
-                        (old_prog["remaining_time_s"] - new_eta_s)
-                        if old_prog else 0.0, 1),
-                    "eta_s": round(new_eta_s, 1),
-                    "applied": AUTO_REROUTE,
-                    "reason": "off_route",
-                    "steps": session.steps,
-                })
-                # Dynamic stop re-ordering on off-route
-                from app.services.navigation import maybe_reorder_stops_on_off_route
-                test_mode = msg.get("test_mode", False)
-                reordered = await maybe_reorder_stops_on_off_route(
-                    app, redis, session, lat, lon, dist, test_mode)
-                if reordered:
-                    logger.info(
-                        "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
-                        session.kurir_id)
+            async with session.lock:
+                old_prog = remaining_progress(session, lat, lon)
+                reroute_start = time.time()
+                response = await compute_reroute(
+                    app, redis, session, lat, lon, traffic=True)
+                if response is not None:
+                    session.coords = list(response.route_coordinates)
+                    new_eta_s = response.estimated_time_seconds or 0.0
+                    reroute_duration = time.time() - reroute_start
+                    nav_reroute_duration_seconds.labels(type="off_route").observe(reroute_duration)
+                    nav_reroutes_total.labels(type="off_route", applied=str(AUTO_REROUTE).lower()).inc()
+                    await websocket.send_json({
+                        "type": "auto_rerouted" if AUTO_REROUTE
+                        else "reroute_available",
+                        "ok": True,
+                        "route_id": session.route_id,
+                        "leg_index": session.leg_index,
+                        "polyline": encode_polyline(
+                            response.route_coordinates, 5),
+                        "saving_s": round(
+                            (old_prog["remaining_time_s"] - new_eta_s)
+                            if old_prog else 0.0, 1),
+                        "eta_s": round(new_eta_s, 1),
+                        "applied": AUTO_REROUTE,
+                        "reason": "off_route",
+                        "steps": session.steps,
+                    })
+                    # Dynamic stop re-ordering on off-route
+                    from app.services.navigation import maybe_reorder_stops_on_off_route
+                    test_mode = msg.get("test_mode", False)
+                    reordered = await maybe_reorder_stops_on_off_route(
+                        app, redis, session, lat, lon, dist, test_mode)
+                    if reordered:
+                        logger.info(
+                            "[NAV] Stops re-ordered after off-route reroute: kurir=%s",
+                            session.kurir_id)
     else:
         session.off_route_active = False
 

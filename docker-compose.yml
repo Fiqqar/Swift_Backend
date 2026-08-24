@@ -2,10 +2,13 @@ services:
   # APP PRODUCTION
   app-prod:
     build: .
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     ports:
-      - "${PORT:-8000}:8000"
+      - "8000:8000"
     volumes:
-      - tiles_data_prod:/app/data/tiles
+      - .:/app
+      - /app/__pycache__
+      - ./data/tiles:/app/data/tiles
     depends_on:
       db:
         condition: service_healthy
@@ -21,12 +24,13 @@ services:
   # APP DEV
   app-dev:
     build: .
-    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+    command:
+      ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
     ports:
       - "8001:8000"
     volumes:
       - .:/app
-      - /app/__pycache__  
+      - /app/__pycache__
       - ./data/tiles:/app/data/tiles
     depends_on:
       db:
@@ -34,7 +38,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env # Menggunakan env dev
+      - .env
     networks:
       - web-net
       - internal-net

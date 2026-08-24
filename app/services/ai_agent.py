@@ -224,7 +224,21 @@ async def _tool_get_remaining_progress(ctx: ToolContext, args: dict) -> dict:
 
     lat = float(args.get("lat"))
     lon = float(args.get("lng"))
-    prog = remaining_progress(ctx.session, lat, lon)
+
+    # Save state sebelum memanggil remaining_progress (yang memiliki side
+    # effect: menulis traveled_distance_m, current_step_index, dan
+    # _last_nearest_idx). AI bisa panggil dengan lat/lng eksploratif —
+    # tanpa restore, state kurir asli jadi rusak.
+    saved_traveled = ctx.session.traveled_distance_m
+    saved_step_idx = ctx.session.current_step_index
+    saved_nearest_idx = ctx.session._last_nearest_idx
+    try:
+        prog = remaining_progress(ctx.session, lat, lon)
+    finally:
+        ctx.session.traveled_distance_m = saved_traveled
+        ctx.session.current_step_index = saved_step_idx
+        ctx.session._last_nearest_idx = saved_nearest_idx
+
     if prog is None:
         return {"error": "belum ada rute aktif yang valid"}
     return prog
@@ -245,8 +259,9 @@ async def _tool_compute_reroute(ctx: ToolContext, args: dict) -> dict:
     if args.get("mode"):
         session.mode = _normalize_mode(args.get("mode"))
     try:
-        response = await compute_reroute(
-            ctx.app, ctx.redis, session, lat, lon, traffic=traffic)
+        async with session.lock:
+            response = await compute_reroute(
+                ctx.app, ctx.redis, session, lat, lon, traffic=traffic)
     finally:
         session.mode = original_mode
     if response is None:

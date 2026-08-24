@@ -758,26 +758,28 @@ async def find_route(payload: RouteRequest, request: Request):
             "last_mile": last_mile_enabled(payload),
         }
     if nav_enabled(payload):
-        route_id = _next_nav_route_id(request.app)
-        response.route_id = route_id
-        await set_nav_route(redis, _token_kurir_id(request) or 0, {
-            "route_id": route_id,
-            "kind": "single",
-            "mode": mode,
-            "last_mile": last_mile_enabled(payload),
-            "total_distance_m": round(
-                _physical_distance(response.route_coordinates), 1),
-            "total_eta_s": round(response.estimated_time_seconds or 0.0, 1),
-            "legs": [{
-                "index": 0,
-                "stop_sequence_number": 1,
-                "package_id": None,
-                "recipient_name": "Destination",
-                "encoded": encode_polyline(response.route_coordinates, 5),
-                "dest": (lat2, lon2),
-                "eta_s": round(response.estimated_time_seconds or 0.0, 1),
-            }],
-        })
+        _kid = _token_kurir_id(request)
+        if _kid is not None:
+            route_id = _next_nav_route_id(request.app)
+            response.route_id = route_id
+            await set_nav_route(redis, _kid, {
+                "route_id": route_id,
+                "kind": "single",
+                "mode": mode,
+                "last_mile": last_mile_enabled(payload),
+                "total_distance_m": round(
+                    _physical_distance(response.route_coordinates), 1),
+                "total_eta_s": round(response.estimated_time_seconds or 0.0, 1),
+                "legs": [{
+                    "index": 0,
+                    "stop_sequence_number": 1,
+                    "package_id": None,
+                    "recipient_name": "Destination",
+                    "encoded": encode_polyline(response.route_coordinates, 5),
+                    "dest": (lat2, lon2),
+                    "eta_s": round(response.estimated_time_seconds or 0.0, 1),
+                }],
+            })
     return response
 
 def _route_option(route_id: int, response, node_sequence,
@@ -892,27 +894,29 @@ async def find_route_options(payload: RouteRequest, request: Request):
     )
 
     if nav_enabled(payload):
-        best_opt = routes[0]
-        route_id = _next_nav_route_id(request.app)
-        response.route_id = route_id
-        await set_nav_route(redis, _token_kurir_id(request) or 0, {
-            "route_id": route_id,
-            "kind": "single",
-            "mode": mode,
-            "last_mile": last_mile,
-            "total_distance_m": round(
-                _physical_distance(best_opt.route_coordinates), 1),
-            "total_eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
-            "legs": [{
-                "index": 0,
-                "stop_sequence_number": 1,
-                "package_id": None,
-                "recipient_name": "Destination",
-                "encoded": encode_polyline(best_opt.route_coordinates, 5),
-                "dest": (lat2, lon2),
-                "eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
-            }],
-        })
+        _kid = _token_kurir_id(request)
+        if _kid is not None:
+            best_opt = routes[0]
+            route_id = _next_nav_route_id(request.app)
+            response.route_id = route_id
+            await set_nav_route(redis, _kid, {
+                "route_id": route_id,
+                "kind": "single",
+                "mode": mode,
+                "last_mile": last_mile,
+                "total_distance_m": round(
+                    _physical_distance(best_opt.route_coordinates), 1),
+                "total_eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
+                "legs": [{
+                    "index": 0,
+                    "stop_sequence_number": 1,
+                    "package_id": None,
+                    "recipient_name": "Destination",
+                    "encoded": encode_polyline(best_opt.route_coordinates, 5),
+                    "dest": (lat2, lon2),
+                    "eta_s": round(best_opt.estimated_time_seconds or 0.0, 1),
+                }],
+            })
     return response
 
 
@@ -1079,29 +1083,31 @@ async def find_optimized_delivery_route(payload: OptimizedDeliveryRouteRequest,
     )
 
     if nav_enabled(payload):
-        route_id = _next_nav_route_id(request.app)
-        response.route_id = route_id
-        await set_nav_route(redis, _token_kurir_id(request) or 0, {
-            "route_id": route_id,
-            "kind": "multi",
-            "mode": mode,
-            "last_mile": last_mile,
-            "total_distance_m": round(total_dist, 1),
-            "total_eta_s": round(total_dur, 1),
-            "legs": [
-                {
-                    "index": l.leg_index,
-                    "stop_sequence_number": l.stop_sequence_number,
-                    "package_id": l.package_id,
-                    "recipient_name": l.recipient_name,
-                    "encoded": encode_polyline(l.geometry, 5),
-                    "dest": (l.geometry[-1][0], l.geometry[-1][1])
-                            if l.geometry else None,
-                    "eta_s": round(l.estimated_time_seconds or 0.0, 1),
-                }
-                for l in legs
-            ],
-        })
+        _kid = _token_kurir_id(request)
+        if _kid is not None:
+            route_id = _next_nav_route_id(request.app)
+            response.route_id = route_id
+            await set_nav_route(redis, _kid, {
+                "route_id": route_id,
+                "kind": "multi",
+                "mode": mode,
+                "last_mile": last_mile,
+                "total_distance_m": round(total_dist, 1),
+                "total_eta_s": round(total_dur, 1),
+                "legs": [
+                    {
+                        "index": l.leg_index,
+                        "stop_sequence_number": l.stop_sequence_number,
+                        "package_id": l.package_id,
+                        "recipient_name": l.recipient_name,
+                        "encoded": encode_polyline(l.geometry, 5),
+                        "dest": (l.geometry[-1][0], l.geometry[-1][1])
+                                if l.geometry else None,
+                        "eta_s": round(l.estimated_time_seconds or 0.0, 1),
+                    }
+                    for l in legs
+                ],
+            })
     return response
 
 
