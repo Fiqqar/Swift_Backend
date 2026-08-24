@@ -76,6 +76,7 @@ def _paket_dict(paket: Paket) -> dict:
 def _cod_dict(s: Shipment) -> dict:
     return {
         "status": s.cod_status,
+        "is_cod": s.cod_status != "not_applicable",
         "amount": s.cod_amount,
         "collected_at": _dt(s.cod_collected_at),
         "remitted_at": _dt(s.cod_remitted_at),
