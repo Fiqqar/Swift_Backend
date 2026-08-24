@@ -1,6 +1,8 @@
 services:
-  app:
+  # APP PRODUCTION
+  app-prod:
     build: .
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "8000:8000"
     volumes:
@@ -13,52 +15,98 @@ services:
       redis:
         condition: service_healthy
     env_file:
+      - .env.production
+    networks:
+      - web-net
+      - internal-net
+    restart: always
+
+  # APP DEV
+  app-dev:
+    build: .
+    command:
+      ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+    ports:
+      - "8001:8000"
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - ./data/tiles:/app/data/tiles
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
       - .env
     networks:
-      - testbe
+      - web-net
+      - internal-net
     restart: unless-stopped
 
+  # 2. QUICK TUNNELS
+  quick-tunnel-prod:
+    image: cloudflare/cloudflared:latest
+    container_name: quick-tunnel-prod
+    restart: always
+    networks:
+      - web-net
+    command: tunnel --url http://app-prod:8000
+
+  quick-tunnel-dev:
+    image: cloudflare/cloudflared:latest
+    container_name: quick-tunnel-dev
+    restart: unless-stopped
+    networks:
+      - web-net
+    command: tunnel --url http://app-dev:8000
+
+  # 3. SHARED DATABASE & REDIS
   db:
     image: postgis/postgis:16-3.4-alpine
     env_file:
-      - .env
+      - .env.production
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME} 
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_prod:/var/lib/postgresql/data
     networks:
-      - testbe
+      - internal-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+    restart: always
 
   redis:
     image: redis:7-alpine
+    # command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes
     volumes:
-      - redis_data:/data
+      - redis_data_prod:/data
     networks:
-      - testbe
+      - internal-net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
+      # test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
-    restart: unless-stopped
+    restart: always
 
 volumes:
-  postgres_data:
-  redis_data:
+  postgres_data_prod:
+  redis_data_prod:
+  tiles_data_prod:
 
 networks:
-  testbe:
+  web-net:
+    driver: bridge
+  internal-net:
     driver: bridge

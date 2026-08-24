@@ -509,86 +509,87 @@
     if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   }
 
-  // Draw reordered route with proper active/remaining leg styling
+  // Draw reordered route with proper active/remaining leg styling.
+  // SINGLE executor for map rendering on reorder — never calls clearMapLayers/drawOverview.
   function drawReorderedRoute(data) {
-    // data should contain: legs (with geometry), stops, active_leg_index, current_position
     clearOldPolylines();
 
-    var group = L.layerGroup().addTo(map);
-    var allBounds = null;
     var legs = data.legs || [];
     var stops = data.stops || [];
-    var activeLegIndex = data.active_leg_index || 0;
-    var currentPos = data.current_position;
-
-    // If current_position is provided and legs exist, prepend it to first leg
-    var legsToDraw = legs;
-    if (data.current_position && legs.length > 0) {
-        var firstLeg = legs[0];
-        if (firstLeg.geometry) {
-            var firstCoords = decodePolyline(firstLeg.geometry);
-            var currentPosCoord = [data.current_position[0], data.current_position[1]];
-            // Check if first coordinate matches current position (approximately)
-            if (firstCoords.length > 0) {
-                var firstCoord = firstCoords[0];
-                var dist = haversineDistance(currentPosCoord, firstCoord);
-                if (dist > 50) { // More than 50m difference, prepend current position
-                    // We need to rebuild the first leg geometry with current position prepended
-                    // For simplicity, we'll just use the geometry as-is and let the active leg start from current position visually
-                }
-            }
-        }
+    // Dynamic active leg index from payload, fallback to stored state, then 0.
+    var activeLegIndex = data.active_leg_index ?? (state && state.activeLegIndex) ?? 0;
 
     var group = L.layerGroup().addTo(map);
     var allBounds = null;
 
+    // Draw ALL legs unconditionally — never nested inside a conditional,
+    // otherwise route disappears when current_position is null.
     legs.forEach(function (leg, i) {
-        var coords = decodePolyline(leg.geometry || '');
-        if (!coords.length) return;
-        var isActive = (i === activeLegIndex);
-        var isDone = (i < activeLegIndex);
+      var coords = decodePolyline(leg.geometry || '');
+      if (!coords.length) return;
+      var isActive = (i === activeLegIndex);   // Red dashed
+      var isDone = (i < activeLegIndex);       // Gray dashed
+      // i > activeLegIndex → upcoming → Blue solid
 
-        var poly = L.polyline(coords, {
-            color: isActive ? '#b3372f' : (isDone ? '#8b9aab' : '#0f6dc1'), // Red dashed for active, gray for done, blue for upcoming
-            weight: isActive ? 6 : (isDone ? 3 : 5),
-            opacity: isActive ? 0.95 : (isDone ? 0.6 : 0.9),
-            dashArray: isActive ? '8 6' : (isDone ? '6 6' : null),
-            pane: 'route'
-        }).addTo(group);
-        legLines.push(poly);
-        if (!allBounds) allBounds = poly.getBounds();
-        else allBounds.extend(poly.getBounds());
+      var poly = L.polyline(coords, {
+        color: isActive ? '#b3372f' : (isDone ? '#8b9aab' : '#0f6dc1'),
+        weight: isActive ? 6 : (isDone ? 3 : 5),
+        opacity: isActive ? 0.95 : (isDone ? 0.6 : 0.9),
+        dashArray: isActive ? '8 6' : (isDone ? '6 6' : null),
+        pane: 'route'
+      }).addTo(group);
+      legLines.push(poly);
+      if (!allBounds) allBounds = poly.getBounds();
+      else allBounds.extend(poly.getBounds());
     });
 
-    // Draw stop markers with updated stop_order
-    stops.forEach(function (s, i) {
-        var color = s.service_type === 'EXPRESS' ? iconColors.express : iconColors.regular;
-        var m = L.marker([s.latitude, s.longitude], {
-            icon: numberedIcon(String(s.stop_order), color)
-        }).addTo(group)
-            .bindTooltip((s.recipient_name || ('Paket ' + (s.package_id || s.stop_order))) +
-                (s.service_type === 'EXPRESS' ? ' · EXPRESS' : ''));
-        stopMarkers.push(m);
-        if (!allBounds) allBounds = m.getBounds();
-        else allBounds.extend(m.getBounds());
+    // Draw stop markers with updated stop_order numbering.
+    stops.forEach(function (s) {
+      var color = s.service_type === 'EXPRESS' ? iconColors.express : iconColors.regular;
+      var m = L.marker([s.latitude, s.longitude], {
+        icon: numberedIcon(String(s.stop_order), color)
+      }).addTo(group)
+        .bindTooltip((s.recipient_name || ('Paket ' + (s.package_id || s.stop_order))) +
+          (s.service_type === 'EXPRESS' ? ' · EXPRESS' : ''));
+      stopMarkers.push(m);
+      if (!allBounds) allBounds = m.getBounds();
+      else allBounds.extend(m.getBounds());
     });
 
-if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
-    
-    // Update state and UI
-    state = { stops: data.stops, legs: data.legs };
-    activeIndex = data.active_leg_index || 0; // Use active_leg_index from payload
-    renderRouteSheet({ stops: data.stops, legs: data.legs });
-    renderNav({ stops: data.stops, legs: data.legs });
+    if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
+
+    // Atomic state sync BEFORE rendering UI list components.
+    state.stops = stops;
+    state.legs = legs;
+    state.activeLegIndex = activeLegIndex;
+    activeIndex = activeLegIndex; // Sync global used by renderRouteSheet/renderNav
+
+    // Sync navigation simulation to the NEW active leg geometry so the
+    // courier position simulator continues along the reordered route,
+    // not the stale pre-reorder polyline.
+    var activeLeg = legs[activeLegIndex];
+    if (activeLeg && activeLeg.geometry) {
+      navRouteCoords = decodePolyline(activeLeg.geometry);
+      navSimIdx = 0;
+    }
+
+    renderRouteSheet({ stops: stops, legs: legs });
+    renderNav({ stops: stops, legs: legs });
   }
-}
 
 
-  // Original drawOverview function for backward compatibility
+// Original drawOverview function for backward compatibility.
+// NOTE: uses & syncs GLOBAL activeIndex — do not shadow it locally, otherwise
+// renderRouteSheet/renderNav (which close over the global) highlight wrongly.
   function drawOverview(data) {
     clearMapLayers();
     var group = L.layerGroup().addTo(map);
     var allBounds = null;
+
+    // Sync global activeIndex so downstream UI renders the correct active stop.
+    if (data.active_leg_index != null) {
+      activeIndex = data.active_leg_index;
+    }
 
     data.legs.forEach(function (leg, i) {
       var coords = decodePolyline(leg.geometry || '');
@@ -620,7 +621,6 @@ if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
     routeLayer = group;
     if (allBounds) map.fitBounds(allBounds, { padding: [40, 40] });
     renderRouteSheet(data);
-
     renderNav(data);
   }
 
@@ -888,42 +888,64 @@ function renderRouteSheet(data) {
         }
       }
       if (msg.type === 'stops_reordered') {
-        // Update route sheet with new order
+        // Update package queue state from reordered payload.
         if (msg.new_stop_order && state) {
-          // Rebuild state.stops from new order
+          // Rebuild stops array in the NEW order from backend.
           var newStops = msg.new_stop_order.map(function(s) {
             return {
               stop_order: s.stop_order,
               package_id: s.package_id,
               recipient_name: s.recipient_name,
-              service_type: s.service_type,
+              service_type: s.service_type || 'REGULAR',
               latitude: s.dest[0],
               longitude: s.dest[1],
               alamat: ''
             };
           });
-          state.stops = newStops;
-          
-          // Use new drawReorderedRoute if full legs data is available
-          if (msg.legs && msg.legs.length > 0) {
-            // New payload format with full legs geometries
-            drawReorderedRoute({
-              legs: msg.legs,
-              stops: state.stops,
-              active_leg_index: msg.active_leg_index || 0,
-              current_position: msg.current_position
-            });
-            log('Stops re-ordered with full geometries: ' + msg.new_stop_order.map(function(s) { return s.package_id; }).join(' → '));
-          } else {
-            // Fallback to old format
-            drawOverview(state);
-            log('Stops re-ordered: ' + msg.new_stop_order.map(function(s) { return s.package_id; }).join(' → '));
+
+          // Use full legs geometry when available; otherwise build minimal
+          // straight-line segments between consecutive stops so the map
+          // still renders a connected route (never falls back to drawOverview
+          // which would clearMapLayers() and wipe the rerouted polyline).
+          // Distance/duration dihitung nyata via haversine ÷ speed default,
+          // bukan hardcoded 0 — agar route sheet tidak menampilkan "0 mnt".
+          var FALLBACK_SPEED_KMH = 40;
+          function legMetrics(prev, dest) {
+            var distM = haversineDistance(prev, dest);
+            var durMin = distM / (FALLBACK_SPEED_KMH / 3.6) / 60.0;
+            return {
+              distance_km: Math.round(distM / 10.0) / 100.0, // 2 desimal
+              duration_mins: Math.round(durMin * 10.0) / 10.0, // 1 desimal
+              estimated_time_seconds: Math.round(durMin * 60.0 * 10.0) / 10.0
+            };
           }
-        }
-        if (msg.active_leg_changed && msg.polyline) {
-          redrawNavPolyline(msg.polyline);
-          navRouteCoords = decodePolyline(msg.polyline || '');
-          navSimIdx = 0;
+
+          var newLegs = (msg.legs && msg.legs.length > 0)
+            ? msg.legs
+            : newStops.map(function(s, i) {
+                if (i === 0) return { leg_index: 0, geometry: '', distance_km: 0, duration_mins: 0, estimated_time_seconds: null };
+                var prev = [newStops[i - 1].latitude, newStops[i - 1].longitude];
+                var m = legMetrics(prev, [s.latitude, s.longitude]);
+                return Object.assign({
+                  leg_index: i,
+                  geometry: encodePolyline([prev, [s.latitude, s.longitude]], 5)
+                }, m);
+              });
+
+          // Atomic state sync BEFORE rendering — keeps UI list & map consistent.
+          state.stops = newStops;
+          state.legs = newLegs;
+          activeIndex = msg.active_leg_index ?? 0;
+
+          // drawReorderedRoute is the SINGLE executor of map rendering here.
+          drawReorderedRoute({
+            legs: newLegs,
+            stops: newStops,
+            active_leg_index: msg.active_leg_index ?? 0,
+            current_position: msg.current_position
+          });
+          log('Stops re-ordered (' + (msg.reorder_reason || 'unknown') + '): ' +
+              msg.new_stop_order.map(function(s) { return s.package_id; }).join(' → '));
         }
         
         // Handle active stop switch (major re-order)
@@ -962,7 +984,7 @@ function renderRouteSheet(data) {
             });
             if (newActiveIdx >= 0) {
               activeIndex = newActiveIdx;
-              drawOverview(state);
+              // drawReorderedRoute already rendered the correct route, no need to call drawOverview
             }
           }
         } else if (msg.reorder_reason === 'off_route_closer_to_next_stop') {

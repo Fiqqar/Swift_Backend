@@ -9,6 +9,10 @@ def _redis_url() -> str:
         return explicit
     host = os.environ.get("REDIS_HOST", "localhost")
     port = os.environ.get("REDIS_PORT", "6379")
+    password = os.getenv("REDIS_PASSWORD", "")
+
+    auth = f":{password}@" if password else ""
+
     return f"redis://{host}:{port}"
 
 

@@ -34,3 +34,32 @@ function decodePolylineSignedValue(str, index) {
   var value = (result & 1) ? ~(result >> 1) : (result >> 1);
   return { value: value, index: index };
 }
+
+/* Encode array [[lat,lng], ...] menjadi string polyline (precision 5).
+ * Kebalikan decodePolyline — dipakai untuk membangun geometri leg darurat
+ * di sisi klien bila backend tidak mengirim legs lengkap. */
+function encodePolyline(coords, precision) {
+  precision = (precision === undefined) ? 5 : precision;
+  var factor = Math.pow(10, precision);
+  var out = [];
+  var prevLat = 0;
+  var prevLng = 0;
+  function encValue(value) {
+    value = value << 1;
+    if (value < 0) value = ~value;
+    while (value >= 0x20) {
+      out.push(String.fromCharCode((0x20 | (value & 0x1f)) + 63));
+      value >>= 5;
+    }
+    out.push(String.fromCharCode(value + 63));
+  }
+  coords.forEach(function (c) {
+    var lat = Math.round(c[0] * factor);
+    var lng = Math.round(c[1] * factor);
+    encValue(lat - prevLat);
+    encValue(lng - prevLng);
+    prevLat = lat;
+    prevLng = lng;
+  });
+  return out.join('');
+}
