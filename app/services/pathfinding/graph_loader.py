@@ -314,6 +314,11 @@ def _deserialize_pg(data: dict) -> "PathGraph":
         edge_names=data.get("edge_names"),
         _alt_k=data.get("_alt_k", 0),
     )
+    if pg._alt_k > 0 and pg.ch is None:
+        logger.warning(
+            "[GRAPH] Contraction Hierarchy tidak dipulihkan dari cache disk "
+            "(ch=None). Routing akan memakai ALT/A* fallback — performa "
+            "lebih lambat untuk rute panjang bila Rust engine tidak aktif.")
     return pg
 
 

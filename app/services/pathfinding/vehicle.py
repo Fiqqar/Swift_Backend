@@ -37,11 +37,12 @@ def _log_stale_graph(pg, logger) -> None:
         if _pg_edge_classes(pg):
             return
         source = getattr(pg, "source", "?")
-        if logger.isEnabledFor(logging.WARNING):
-            logger.warning(
-                "[vehicle] graf tanpa edge_classes (mode tidak tersaring), "
-                "source=%s. Rebuild dengan scripts/build_base_graph.py.",
-                source)
+        logger.warning(
+            "[vehicle] MODE FILTER DILEWATI: graf tanpa edge_classes "
+            "(source=%s). Semua edge dianggap boleh dilalui — kendaraan "
+            "non-car bisa diarahkan ke jalan yang seharusnya diblokir "
+            "(mis. motor lewat tol). Rebuild graf dengan PBF asli untuk "
+            "mengaktifkan filter.", source)
     except Exception:
         pass
 
