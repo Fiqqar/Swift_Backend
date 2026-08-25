@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.logging import get_logger
 from app.core.metrics import (
+    pf_order_node_collision_total,
     pf_route_calc_duration_seconds,
     pf_route_requests_total,
 )
@@ -692,7 +693,19 @@ async def _ordering_road_distance(app, redis, mode: str, last_mile: bool,
         return fallback
     if response is None or response.total_distance_meters is None:
         return fallback
-    return float(response.total_distance_meters)
+
+    # Node-collision detection (#29): bila jarak jalan jauh lebih kecil dari
+    # jarak lurus asli, indikasi kedua titik snap ke node yang sama karena
+    # resolusi grid _LOC_BUCKET terlalu kasar (~111m). Pakai haversine sebagai
+    # sinyal tie-breaking yang masih presisi sesuai koordinat input asli.
+    road_dist = float(response.total_distance_meters)
+    if road_dist < 5.0 and fallback > 15.0:
+        logger.info(
+            "[ORDER] Node collision (%.1fm vs %.1fm haversine); "
+            "pakai haversine.", road_dist, fallback)
+        pf_order_node_collision_total.inc()
+        return fallback
+    return road_dist
 
 
 @router.post("/find-route", response_model=RouteResponse,

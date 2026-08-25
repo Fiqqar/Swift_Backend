@@ -158,6 +158,12 @@ pf_a_star_nodes_visited = Histogram(
     buckets=(10, 50, 100, 500, 1000, 5000, 10000, 50000),
 )
 
+pf_order_node_collision_total = Counter(
+    "pf_order_node_collision_total",
+    "Node collisions detected during stop ordering (road_dist << haversine)",
+    registry=REGISTRY,
+)
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Traffic Metrics
