@@ -116,6 +116,62 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response.headers["X-Correlation-ID"] = cid
         return response
 
+
+class HttpAccessLogMiddleware(BaseHTTPMiddleware):
+    """PoW-friendly HTTP access log — method, path, status, latency, kurir.
+
+    Filter: skip /health, /metrics, /docs, /openapi.json, /favicon biar
+    log video tidak spam. Aktif di app-dev (APP_ENV=development) dan
+    tetap readable di production karena pakai structlog ConsoleRenderer.
+    """
+
+    # path yang tidak perlu di-log agar video PoW bersih
+    _SKIP_PREFIXES = ("/health", "/metrics", "/docs", "/openapi.json", "/favicon", "/static")
+
+    async def dispatch(self, request: Request, call_next):
+        # skip noisy paths
+        path = request.url.path
+        if any(path.startswith(p) for p in self._SKIP_PREFIXES):
+            return await call_next(request)
+
+        import time
+
+        start = time.perf_counter()
+        # coba ekstrak kurir_id dari JWT untuk log konteks
+        kurir_id = "-"
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            try:
+                from app.core.security import decode_access_token
+
+                payload = decode_access_token(auth[7:])
+                if payload and "sub" in payload:
+                    kurir_id = str(payload["sub"])
+            except Exception:
+                pass
+
+        # panggil handler
+        response: Response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start) * 1000, 1)
+
+        # level: 2xx/3xx = info, 4xx = warning, 5xx = error
+        http_logger = structlog.get_logger("http")
+        log_data = dict(
+            method=request.method,
+            path=path,
+            status=response.status_code,
+            duration_ms=duration_ms,
+            kurir_id=kurir_id,
+            ip=request.client.host if request.client else "-",
+        )
+        if response.status_code >= 500:
+            http_logger.error("http.request", **log_data)
+        elif response.status_code >= 400:
+            http_logger.warning("http.request", **log_data)
+        else:
+            http_logger.info("http.request", **log_data)
+        return response
+
 structlog_processors: list[Any] = [
     structlog.processors.TimeStamper(fmt="iso"),
     structlog.stdlib.add_log_level,
@@ -160,6 +216,15 @@ def setup_logging() -> None:
     is_production = os.environ.get("APP_ENV", "development").lower() == "production"
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
+    import logging as logging_mod
+
+    # Set stdlib root level agar INFO tidak ke-filter (bug sebelumnya: INFO hilang)
+    level_num = getattr(logging_mod, log_level, logging_mod.INFO)
+    logging_mod.basicConfig(level=level_num, force=True)
+    # Pastikan logger PoW (http/auth/shipment/pod/cloudinary) di level INFO
+    for pow_logger in ["http", "auth", "shipment", "pod", "cloudinary", "upload", "app", "routing", "navigation", "agent"]:
+        logging_mod.getLogger(pow_logger).setLevel(level_num)
+
     # Configure structlog-enabled loggers for pathfinding components
     for component, env_key in [("", ""), ("pathfinding", "LOG_PATHFINDING")]:
         prefix = env_key.upper() if env_key else "PATHFINDING"
@@ -168,8 +233,6 @@ def setup_logging() -> None:
         struct_logger = structlog.get_logger(logger_name)
 
     # Intercept uvicorn/starlette standard library logs
-    import logging as logging_mod
-
     for uvicorn_logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "starlette"]:
         uvicorn_logger = logging_mod.getLogger(uvicorn_logger_name)
         uvicorn_logger.handlers = []

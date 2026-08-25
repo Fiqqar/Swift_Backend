@@ -22,6 +22,7 @@ from app.schemas.shipment import (
     HistoryCreate,
     ShipmentStatusUpdate,
 )
+from app.core.logging import get_logger
 from app.services.cloudinary_service import (
     CloudinaryNotConfiguredError,
     UPLOAD_FOLDER,
@@ -31,6 +32,9 @@ from app.services.cloudinary_service import (
 )
 
 router = APIRouter(tags=["Shipment"])
+
+logger = get_logger("shipment")
+# PoW: skip POD photo logging for now (app-dev only, sesuai instruksi)
 
 ACTIVE_STATUSES = ("assigned", "picked_up")
 COD_STATUSES = ("pending", "collected", "remitted", "not_applicable")
@@ -135,8 +139,10 @@ async def _get_shipments_map(session: AsyncSession, shipment_ids) -> dict:
 async def assign_batch(
     payload: BatchAssignRequest, session: AsyncSession = Depends(get_session)
 ):
+    logger.info("shipment.batch_assign_attempt", kurir_id=payload.kurir_id, paket_ids=payload.paket_ids, hub_id=payload.hub_id)
     kurir = await session.get(Kurir, payload.kurir_id)
     if kurir is None or not kurir.is_active:
+        logger.warning("shipment.batch_assign_failed", reason="kurir_not_found", kurir_id=payload.kurir_id)
         return err("Kurir tidak ditemukan", 404)
 
     active = await session.execute(
@@ -211,6 +217,7 @@ async def assign_batch(
         },
         "shipments": [_shipment_dict(s, paket_map[s.paket_id]) for s in shipments],
     }
+    logger.info("shipment.batch_created", batch_id=batch.id, batch_no=batch.batch_no, kurir_id=kurir.id, total_paket=len(shipments))
     return ok(
         f"Batch {batch.batch_no} dibuat: {len(shipments)} paket di-assign ke kurir {kurir.nama}",
         data,
@@ -329,8 +336,10 @@ async def update_batch_status(
     payload: BatchStatusUpdate,
     session: AsyncSession = Depends(get_session),
 ):
+    logger.info("shipment.batch_status_attempt", batch_id=batch_id, target_status=payload.status)
     batch = await session.get(Batch, batch_id)
     if batch is None:
+        logger.warning("shipment.batch_status_failed", batch_id=batch_id, reason="not_found")
         return err("Batch tidak ditemukan", 404)
 
     new, cur = payload.status, batch.status
@@ -340,6 +349,7 @@ async def update_batch_status(
         "returned": cur in ("assigned", "picked_up"),
     }
     if not valid.get(new):
+        logger.warning("shipment.batch_status_failed", batch_id=batch_id, reason="invalid_transition", cur=cur, new=new)
         return err(f"Tidak bisa ubah status batch dari '{cur}' ke '{new}'", 409)
 
     now = datetime.now(timezone.utc)
@@ -398,6 +408,7 @@ async def update_batch_status(
     batch.status = new
     await session.commit()
 
+    logger.info("shipment.batch_status_updated", batch_id=batch.id, batch_no=batch.batch_no, old_status=cur, new_status=new, shipments=len(shipments))
     return ok(f"Status batch {batch.batch_no} menjadi {new}", {"id": batch.id, "status": new})
 
 
@@ -496,8 +507,10 @@ async def update_shipment_status(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    logger.info("shipment.status_attempt", shipment_id=shipment_id, target_status=payload.status)
     s = await session.get(Shipment, shipment_id)
     if s is None:
+        logger.warning("shipment.status_failed", shipment_id=shipment_id, reason="not_found")
         return err("Shipment tidak ditemukan", 404)
 
     new, cur = payload.status, s.status
@@ -508,6 +521,7 @@ async def update_shipment_status(
         "returned": cur in ("assigned", "picked_up"),
     }
     if not valid.get(new):
+        logger.warning("shipment.status_failed", shipment_id=shipment_id, reason="invalid_transition", cur=cur, new=new)
         return err(f"Tidak bisa ubah status shipment dari '{cur}' ke '{new}'", 409)
 
     now = datetime.now(timezone.utc)
@@ -538,6 +552,7 @@ async def update_shipment_status(
     )
     await session.commit()
 
+    logger.info("shipment.status_updated", shipment_id=s.id, old_status=cur, new_status=new, paket_id=s.paket_id, batch_id=s.batch_id)
     await _invalidate_tracking_cache(request, s)
     return ok(f"Status shipment {shipment_id} menjadi {new}", {"shipment_id": s.id, "status": new})
 
@@ -781,14 +796,18 @@ async def upload_pod_photo(
 ):
     """Unggah 1–N foto POD ke Cloudinary lalu buat satu riwayat
     `pod_submitted` dalam satu panggilan."""
+    logger.info("pod.upload_attempt", shipment_id=shipment_id, files=len(files), recipient=recipient_name, lat=latitude, lon=longitude)
     s = await session.get(Shipment, shipment_id)
     if s is None:
+        logger.warning("pod.upload_failed", shipment_id=shipment_id, reason="shipment_not_found")
         return err("Shipment tidak ditemukan", 404)
 
     if not cloudinary_configured():
+        logger.warning("pod.upload_failed", shipment_id=shipment_id, reason="cloudinary_not_configured")
         return err("Cloudinary belum dikonfigurasi (CLOUDINARY_* tidak terisi)", 503)
 
     if len(files) > _MAX_POD_FILES:
+        logger.warning("pod.upload_failed", shipment_id=shipment_id, reason="too_many_files", files=len(files), max=_MAX_POD_FILES)
         return err(f"Maksimal {_MAX_POD_FILES} foto per unggahan", 400)
 
     photo_urls: list[str] = []
@@ -796,17 +815,22 @@ async def upload_pod_photo(
     for idx, upload in enumerate(files):
         data, error, status = _read_photo(upload, idx)
         if error:
+            logger.warning("pod.upload_failed", shipment_id=shipment_id, reason="validation_failed", file_index=idx, error=error)
             return err(error, status)
         assert data is not None  # valid => data pasti terisi
+        logger.info("pod.cloudinary_uploading", shipment_id=shipment_id, file_index=idx, size_bytes=len(data), content_type=upload.content_type)
         try:
             photo_url = upload_image(
                 data,
                 f"{base_folder}/photo",
                 f"pod_{int(time.time())}_{uuid4().hex[:8]}",
             )
+            logger.info("pod.cloudinary_success", shipment_id=shipment_id, file_index=idx, url=photo_url)
         except CloudinaryNotConfiguredError as e:
+            logger.warning("pod.cloudinary_failed", shipment_id=shipment_id, file_index=idx, error=str(e))
             return err(str(e), 503)
         except Exception as e:  # noqa: BLE001 - error upload diteruskan sebagai respons
+            logger.warning("pod.cloudinary_failed", shipment_id=shipment_id, file_index=idx, error=str(e))
             return err(f"Upload Cloudinary gagal: {e}", 502)
         photo_urls.append(photo_url)
 
@@ -821,6 +845,8 @@ async def upload_pod_photo(
     )
     session.add(history)
     await session.commit()
+
+    logger.info("pod.upload_success", shipment_id=s.id, history_id=history.id, photo_count=len(photo_urls), recipient=recipient_name, photo_urls=photo_urls)
 
     return ok(
         "POD diunggah dan riwayat dibuat",

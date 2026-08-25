@@ -9,11 +9,14 @@ import os
 from io import BytesIO
 
 import cloudinary
+import structlog
 
 CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
 API_KEY = os.environ.get("CLOUDINARY_API_KEY", "").strip()
 API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "").strip()
 UPLOAD_FOLDER = os.environ.get("CLOUDINARY_UPLOAD_FOLDER", "pod").strip() or "pod"
+
+logger = structlog.get_logger("cloudinary")
 
 
 class CloudinaryNotConfiguredError(RuntimeError):
@@ -58,25 +61,33 @@ def _upload_result(file_bytes: bytes, folder: str, public_id: str) -> dict:
     ``RuntimeError`` bila Cloudinary tidak mengembalikan URL.
     """
     if not cloudinary_configured():
+        logger.warning("cloudinary.not_configured", folder=folder, public_id=public_id)
         raise CloudinaryNotConfiguredError(
             "Cloudinary belum dikonfigurasi "
             "(CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET)."
         )
+    logger.info("cloudinary.uploading", folder=folder, public_id=public_id, bytes=len(file_bytes))
     cloudinary.config(
         cloud_name=CLOUD_NAME,
         api_key=API_KEY,
         api_secret=API_SECRET,
     )
-    result = cloudinary.uploader.upload(
-        file=BytesIO(file_bytes),
-        folder=folder,
-        public_id=public_id,
-        resource_type="image",
-        overwrite=True,
-    )
+    try:
+        result = cloudinary.uploader.upload(
+            file=BytesIO(file_bytes),
+            folder=folder,
+            public_id=public_id,
+            resource_type="image",
+            overwrite=True,
+        )
+    except Exception as exc:
+        logger.warning("cloudinary.upload_failed", folder=folder, public_id=public_id, error=str(exc))
+        raise
     url = result.get("secure_url") or result.get("url")
     if not url:
+        logger.warning("cloudinary.no_url", folder=folder, public_id=public_id, result=result)
         raise RuntimeError("Upload Cloudinary tidak mengembalikan URL.")
+    logger.info("cloudinary.upload_success", folder=folder, public_id=public_id, url=url, format=result.get("format"), width=result.get("width"), height=result.get("height"))
     return result
 
 

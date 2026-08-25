@@ -14,7 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.api.v1.router import api_router
-from app.core.logging import CorrelationIdMiddleware, setup_logging
+from app.core.logging import CorrelationIdMiddleware, HttpAccessLogMiddleware, setup_logging
 from app.core.metrics import METRICS_ENABLED, metrics_endpoint, record_http_request
 
 # Configure logging FIRST, before any other imports that might log
@@ -343,6 +343,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# PoW access log (app-dev) — log method/path/status/latency per request
+app.add_middleware(HttpAccessLogMiddleware)
 
 # Correlation ID middleware (must be first to capture all requests)
 app.add_middleware(CorrelationIdMiddleware)

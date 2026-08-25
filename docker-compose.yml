@@ -44,14 +44,14 @@ services:
       - internal-net
     restart: unless-stopped
 
-  # 2. QUICK TUNNELS
+  # 2. QUICK TUNNELS (http2 fallback untuk QUIC/UDP yang diblok firewall -> datagram handler error)
   quick-tunnel-prod:
     image: cloudflare/cloudflared:latest
     container_name: quick-tunnel-prod
     restart: always
     networks:
       - web-net
-    command: tunnel --url http://app-prod:8000
+    command: tunnel --protocol http2 --url http://app-prod:8000
 
   quick-tunnel-dev:
     image: cloudflare/cloudflared:latest
@@ -59,7 +59,7 @@ services:
     restart: unless-stopped
     networks:
       - web-net
-    command: tunnel --url http://app-dev:8000
+    command: tunnel --protocol http2 --url http://app-dev:8000
 
   # 3. SHARED DATABASE & REDIS
   db:
