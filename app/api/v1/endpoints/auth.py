@@ -5,11 +5,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import current_kurir_or_error, get_session
 from app.api.v1.response import err, ok
+from app.core.logging import get_logger
 from app.core.security import create_access_token, verify_password
 from app.models.kurir import Kurir
 from app.schemas.auth import LoginRequest
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+logger = get_logger("auth")
 
 
 def _kurir_data(kurir: Kurir) -> dict:
@@ -32,20 +35,26 @@ def _kurir_data(kurir: Kurir) -> dict:
                  "- Error `401` bila kredensial salah, `422` bila kosong."))
 async def login(payload: LoginRequest, session: AsyncSession = Depends(get_session)):
     username = (payload.username or "").strip()
+    logger.info("auth.login_attempt", username=username or "-")
     if not username or not payload.password:
+        logger.warning("auth.login_failed", username=username or "-", reason="empty_credentials")
         return err("Username dan password wajib diisi", 422)
 
     try:
         result = await session.execute(select(Kurir).where(Kurir.username == username))
         kurir = result.scalar_one_or_none()
-    except (SQLAlchemyError, OSError):
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("auth.login_failed", username=username, reason="db_unavailable", error=str(exc))
         return err("Database tidak tersedia, coba lagi nanti", 503)
     if kurir is None or not kurir.is_active or not kurir.password_hash:
+        logger.warning("auth.login_failed", username=username, reason="invalid_credentials_or_inactive")
         return err("Username atau password salah", 401)
     if not verify_password(payload.password, kurir.password_hash):
+        logger.warning("auth.login_failed", username=username, kurir_id=kurir.id, reason="wrong_password")
         return err("Username atau password salah", 401)
 
     token = create_access_token(kurir.id, kurir.username or "")
+    logger.info("auth.login_success", kurir_id=kurir.id, username=kurir.username)
     return ok("Login berhasil", {"token": token, "kurir": _kurir_data(kurir)})
 
 
@@ -58,5 +67,7 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
 async def me(request: Request, session: AsyncSession = Depends(get_session)):
     kurir, error = await current_kurir_or_error(request, session)
     if error:
+        logger.warning("auth.me_failed", reason=error)
         return err(error, 401)
+    logger.info("auth.me_success", kurir_id=kurir.id, username=kurir.username)
     return ok("Berhasil mengambil data kurir", {"kurir": _kurir_data(kurir)})
