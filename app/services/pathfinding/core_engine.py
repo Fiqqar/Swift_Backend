@@ -19,19 +19,25 @@ def _rust_graph_for(pg):
 
 def route(pg, start_node: int, goal_node: int,
           penalties: dict | None = None):
-    """Find shortest path with pre-check for reachability.
-    
+    """Find shortest path.
+
+    Bila Rust engine tersedia, skip reachability pre-check Python murni —
+    Rust menangani "no path" secara native dan lebih cepat daripada
+    BFS/DFS pre-check di `connectivity.py`.
+
     Returns (path, cost) or (None, inf) if no path exists.
     """
-    # Pre-check: verify start and goal are in same connected component
-    # (considering blocked edges from penalties)
     blocked_edges = set()
     if penalties:
         blocked_edges = {eid for eid, mult in penalties.items() if mult == float("inf")}
-    
-    if not reaches(pg.graph, start_node, goal_node, blocked_edges):
-        return None, float('inf')
-    
+
+    # Pre-check reachability HANYA saat fallback ke Python A* murni.
+    # Saat Rust tersedia, biarkan engine yang menentukan "no path" —
+    # menghindari double traversal (BFS + A*) pada graf besar/dense.
+    if not RUST_AVAILABLE:
+        if not reaches(pg.graph, start_node, goal_node, blocked_edges):
+            return None, float('inf')
+
     if RUST_AVAILABLE:
         try:
             path, cost = _rust_graph_for(pg).route(
